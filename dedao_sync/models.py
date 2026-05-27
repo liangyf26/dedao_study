@@ -42,6 +42,8 @@ class DedaoConfig:
     browser_profile_dir: Path
     headless: bool
     request_interval_seconds: float
+    save_failure_html: bool
+    failure_snapshot_dir: Path
     columns: tuple[ColumnConfig, ...]
 
 
@@ -67,6 +69,7 @@ class FeishuConfig:
     enabled: bool
     webhook_url_env: str
     secret_env: str
+    include_titles: bool = True
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,7 @@ class ContentDetail:
     media_candidates: tuple[MediaCandidate, ...] = ()
     raw_html_hash: str | None = None
     quality_reason: str | None = None
+    diagnostic_path: Path | None = None
     extracted_at: datetime | None = None
 
 
@@ -144,5 +148,7 @@ class RunReport:
     summary_failed_count: int = 0
     log_path: Path | None = None
     added_by_column: dict[str, list[str]] = field(default_factory=dict)
+    missing_by_column: dict[str, list[str]] = field(default_factory=dict)
+    summary_failed_by_column: dict[str, list[str]] = field(default_factory=dict)
     failures: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)

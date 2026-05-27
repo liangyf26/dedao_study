@@ -28,6 +28,7 @@ from .notifier import FeishuNotifier, load_feishu_credentials
 from .preflight import PreflightChecker
 from .repository import SyncRepository
 from .repository import row_to_content_item
+from .security import redact
 from .summarizer import SummaryError, create_summary_service
 
 
@@ -53,6 +54,22 @@ def final_run_status(report: RunReport) -> str:
     return "success" if attention_count == 0 else "partial_failed"
 
 
+def detail_failure_message(detail: ContentDetail) -> str | None:
+    parts = []
+    if detail.quality_reason:
+        parts.append(detail.quality_reason)
+    if detail.diagnostic_path:
+        parts.append(f"diagnostic_html={detail.diagnostic_path}")
+    return "; ".join(parts) or None
+
+
+def add_report_item(bucket: dict[str, list[str]], column: str, title: str, note: object | None = None) -> None:
+    text = title
+    if note:
+        text = f"{title}（{redact(note)}）"
+    bucket.setdefault(column, []).append(text)
+
+
 def run_preflight(config_path: str | Path = "config.yaml", *, require_auth: bool = True) -> tuple[RunReport, int | None]:
     config = load_config(config_path)
     log_path = setup_logging(config.root_dir)
@@ -76,7 +93,7 @@ def run_preflight(config_path: str | Path = "config.yaml", *, require_auth: bool
         report.finished_at = datetime.now()
         repo.finish_run(run_id, report)
 
-    notifier = FeishuNotifier(load_feishu_credentials(config.feishu))
+    notifier = FeishuNotifier(load_feishu_credentials(config.feishu), include_titles=config.feishu.include_titles)
     try:
         notifier.send_run_report(report)
     except Exception:
@@ -93,6 +110,7 @@ def run_sync(
     crawler: DedaoCrawler | None = None,
     summary_service=None,
     notifier: FeishuNotifier | None = None,
+    send_notification: bool = True,
 ) -> tuple[RunReport, int]:
     config = load_config(config_path)
     log_path = setup_logging(config.root_dir)
@@ -104,7 +122,7 @@ def run_sync(
     repo = SyncRepository(default_db_path(config.root_dir))
     repo.migrate()
     run_id = repo.start_run(report)
-    notifier = notifier or FeishuNotifier(load_feishu_credentials(config.feishu))
+    notifier = notifier or FeishuNotifier(load_feishu_credentials(config.feishu), include_titles=config.feishu.include_titles)
     lock = RunLock(default_lock_path(config.root_dir))
 
     try:
@@ -119,10 +137,15 @@ def run_sync(
         except RunLockError as exc:
             report.status = STATUS_LOCKED
             report.failed_count = 1
-            report.failures.append(str(exc))
+            report.failures.append(redact(exc))
             return report, run_id
 
-        preflight = PreflightChecker(config, require_auth=True, require_browser=crawler is None).check()
+        preflight = PreflightChecker(
+            config,
+            require_auth=True,
+            require_browser=crawler is None,
+            require_feishu=config.feishu.enabled,
+        ).check()
         if not preflight.ok:
             report.status = STATUS_PREFLIGHT_FAILED
             report.failed_count = len(preflight.errors)
@@ -141,7 +164,7 @@ def run_sync(
         except CrawlerError as exc:
             report.status = STATUS_FAILED
             report.failed_count = 1
-            report.failures.append(str(exc))
+            report.failures.append(redact(exc))
             return report, run_id
 
         writer = MarkdownWriter(config)
@@ -153,7 +176,7 @@ def run_sync(
                 crawl_result = crawler.list_items(column)
             except Exception as exc:
                 report.failed_count += 1
-                report.failures.append(f"{column.name}: {exc}")
+                report.failures.append(redact(f"{column.name}: {exc}"))
                 LOGGER.exception("column failed: %s", column.name)
                 continue
 
@@ -177,21 +200,24 @@ def run_sync(
 
                 try:
                     detail = crawler.fetch_detail(item)
+                    synced_item = detail.item
                     if not detail.has_transcript:
                         status = STATUS_EXTRACTOR_FAILED if detail.quality_reason else STATUS_MISSING_TRANSCRIPT
+                        failure_message = detail_failure_message(detail)
                         item_id = repo.upsert_item(
-                            item,
+                            synced_item,
                             status=status,
                             content_hash=detail.raw_html_hash,
                             has_transcript=False,
-                            error_message=detail.quality_reason,
+                            error_message=failure_message,
                         )
-                        repo.add_run_item(run_id, item_id, "extract", status, detail.quality_reason)
+                        repo.add_run_item(run_id, item_id, "extract", status, failure_message)
                         report.missing_transcript_count += 1
+                        add_report_item(report.missing_by_column, synced_item.column_name, synced_item.title, failure_message)
                         continue
 
                     digest = content_hash(detail.transcript_text)
-                    existing_by_hash = repo.find_existing(item, digest)
+                    existing_by_hash = repo.find_existing(synced_item, digest)
                     if existing_by_hash:
                         report.skipped_count += 1
                         repo.add_run_item(
@@ -213,12 +239,13 @@ def run_sync(
                         summary = SummaryResult.empty(status=STATUS_SUMMARY_FAILED)
                         summary_status = STATUS_SUMMARY_FAILED
                         report.summary_failed_count += 1
+                        add_report_item(report.summary_failed_by_column, synced_item.column_name, synced_item.title, exc)
                         LOGGER.warning("summary failed for %s: %s", item.title, exc)
 
                     path = writer.write(detail, summary)
                     status = STATUS_SYNCED if summary_status != STATUS_SUMMARY_FAILED else STATUS_SUMMARY_FAILED
                     item_id = repo.upsert_item(
-                        item,
+                        synced_item,
                         status=status,
                         content_hash=digest,
                         file_path=path,
@@ -227,12 +254,13 @@ def run_sync(
                     )
                     repo.add_run_item(run_id, item_id, "sync", status, str(path))
                     report.success_count += 1
-                    report.added_by_column.setdefault(column.name, []).append(item.title)
+                    report.added_by_column.setdefault(column.name, []).append(synced_item.title)
                 except Exception as exc:
-                    item_id = repo.upsert_item(item, status=STATUS_FAILED, error_message=str(exc))
-                    repo.add_run_item(run_id, item_id, "sync", STATUS_FAILED, str(exc))
+                    safe_error = redact(exc)
+                    item_id = repo.upsert_item(item, status=STATUS_FAILED, error_message=safe_error)
+                    repo.add_run_item(run_id, item_id, "sync", STATUS_FAILED, safe_error)
                     report.failed_count += 1
-                    report.failures.append(f"{column.name}/{item.title}: {exc}")
+                    report.failures.append(redact(f"{column.name}/{item.title}: {exc}"))
                     LOGGER.exception("item failed: %s", item.title)
 
         report.status = final_run_status(report)
@@ -241,10 +269,11 @@ def run_sync(
         lock.release()
         report.finished_at = datetime.now()
         repo.finish_run(run_id, report, "\n".join(report.failures) if report.failures else None)
-        try:
-            notifier.send_run_report(report)
-        except Exception as exc:
-            LOGGER.warning("feishu notification failed: %s", exc)
+        if send_notification:
+            try:
+                notifier.send_run_report(report)
+            except Exception as exc:
+                LOGGER.warning("feishu notification failed: %s", exc)
 
 
 def run_retry_failed(
@@ -261,7 +290,7 @@ def run_retry_failed(
     repo = SyncRepository(default_db_path(config.root_dir))
     repo.migrate()
     run_id = repo.start_run(report)
-    notifier = notifier or FeishuNotifier(load_feishu_credentials(config.feishu))
+    notifier = notifier or FeishuNotifier(load_feishu_credentials(config.feishu), include_titles=config.feishu.include_titles)
     lock = RunLock(default_lock_path(config.root_dir))
 
     retry_rows = repo.list_items_by_status(
@@ -282,7 +311,7 @@ def run_retry_failed(
         except RunLockError as exc:
             report.status = STATUS_LOCKED
             report.failed_count = 1
-            report.failures.append(str(exc))
+            report.failures.append(redact(exc))
             return report, run_id
 
         preflight = PreflightChecker(config, require_auth=True, require_browser=crawler is None).check()
@@ -302,7 +331,7 @@ def run_retry_failed(
         except CrawlerError as exc:
             report.status = STATUS_FAILED
             report.failed_count = 1
-            report.failures.append(str(exc))
+            report.failures.append(redact(exc))
             return report, run_id
 
         writer = MarkdownWriter(config)
@@ -310,12 +339,55 @@ def run_retry_failed(
         for row in retry_rows:
             item = row_to_content_item(row)
             try:
+                if row["status"] == STATUS_SUMMARY_FAILED and row["file_path"] and int(row["has_transcript"] or 0):
+                    path = Path(str(row["file_path"]))
+                    if path.exists():
+                        transcript = extract_transcript_from_note(path.read_text(encoding="utf-8"))
+                        if not transcript:
+                            raise ValueError("全文稿 section not found")
+                        detail = ContentDetail(
+                            item=item,
+                            transcript_text=transcript,
+                            has_transcript=True,
+                            raw_html_hash=row["content_hash"],
+                        )
+                        try:
+                            summary = summary_service.summarize(detail)
+                        except SummaryError as exc:
+                            report.summary_failed_count += 1
+                            add_report_item(report.summary_failed_by_column, item.column_name, item.title, exc)
+                            repo.upsert_item(item, status=STATUS_SUMMARY_FAILED, error_message=redact(exc))
+                            repo.add_run_item(run_id, int(row["id"]), "retry-summary", STATUS_SUMMARY_FAILED, redact(exc))
+                            LOGGER.warning("summary failed for retry %s: %s", item.title, exc)
+                            continue
+                        writer.overwrite(path, detail, summary)
+                        item_id = repo.upsert_item(
+                            item,
+                            status=STATUS_SYNCED,
+                            content_hash=row["content_hash"],
+                            file_path=path,
+                            has_transcript=True,
+                            summary_status=summary.status,
+                        )
+                        repo.add_run_item(run_id, item_id, "retry-summary", STATUS_SYNCED, str(path))
+                        report.success_count += 1
+                        report.added_by_column.setdefault(item.column_name, []).append(item.title)
+                        continue
+
                 detail = crawler.fetch_detail(item)
+                synced_item = detail.item
                 if not detail.has_transcript:
                     status = STATUS_EXTRACTOR_FAILED if detail.quality_reason else STATUS_MISSING_TRANSCRIPT
-                    repo.upsert_item(item, status=status, content_hash=detail.raw_html_hash, error_message=detail.quality_reason)
-                    repo.add_run_item(run_id, int(row["id"]), "retry", status, detail.quality_reason)
+                    failure_message = detail_failure_message(detail)
+                    repo.upsert_item(
+                        synced_item,
+                        status=status,
+                        content_hash=detail.raw_html_hash,
+                        error_message=failure_message,
+                    )
+                    repo.add_run_item(run_id, int(row["id"]), "retry", status, failure_message)
                     report.missing_transcript_count += 1
+                    add_report_item(report.missing_by_column, synced_item.column_name, synced_item.title, failure_message)
                     continue
                 digest = content_hash(detail.transcript_text)
                 summary_status = "disabled"
@@ -328,11 +400,12 @@ def run_retry_failed(
                     summary = SummaryResult.empty(status=STATUS_SUMMARY_FAILED)
                     summary_status = STATUS_SUMMARY_FAILED
                     report.summary_failed_count += 1
+                    add_report_item(report.summary_failed_by_column, synced_item.column_name, synced_item.title, exc)
                     LOGGER.warning("summary failed for retry %s: %s", item.title, exc)
                 path = writer.write(detail, summary)
                 status = STATUS_SYNCED if summary_status != STATUS_SUMMARY_FAILED else STATUS_SUMMARY_FAILED
                 item_id = repo.upsert_item(
-                    item,
+                    synced_item,
                     status=status,
                     content_hash=digest,
                     file_path=path,
@@ -341,12 +414,13 @@ def run_retry_failed(
                 )
                 repo.add_run_item(run_id, item_id, "retry", status, str(path))
                 report.success_count += 1
-                report.added_by_column.setdefault(item.column_name, []).append(item.title)
+                report.added_by_column.setdefault(synced_item.column_name, []).append(synced_item.title)
             except Exception as exc:
-                repo.upsert_item(item, status=STATUS_FAILED, error_message=str(exc))
-                repo.add_run_item(run_id, int(row["id"]), "retry", STATUS_FAILED, str(exc))
+                safe_error = redact(exc)
+                repo.upsert_item(item, status=STATUS_FAILED, error_message=safe_error)
+                repo.add_run_item(run_id, int(row["id"]), "retry", STATUS_FAILED, safe_error)
                 report.failed_count += 1
-                report.failures.append(f"{item.column_name}/{item.title}: {exc}")
+                report.failures.append(redact(f"{item.column_name}/{item.title}: {exc}"))
         report.status = final_run_status(report)
         return report, run_id
     finally:
@@ -372,7 +446,7 @@ def run_resummarize(
     repo = SyncRepository(default_db_path(config.root_dir))
     repo.migrate()
     run_id = repo.start_run(report)
-    notifier = notifier or FeishuNotifier(load_feishu_credentials(config.feishu))
+    notifier = notifier or FeishuNotifier(load_feishu_credentials(config.feishu), include_titles=config.feishu.include_titles)
     writer = MarkdownWriter(config)
     summary_service = summary_service or create_summary_service(config.summary)
     rows = repo.list_items_needing_summary(limit=limit)
@@ -385,7 +459,7 @@ def run_resummarize(
         except RunLockError as exc:
             report.status = STATUS_LOCKED
             report.failed_count = 1
-            report.failures.append(str(exc))
+            report.failures.append(redact(exc))
             return report, run_id
 
         for row in rows:
@@ -417,11 +491,13 @@ def run_resummarize(
                 report.success_count += 1
                 report.added_by_column.setdefault(item.column_name, []).append(item.title)
             except Exception as exc:
-                repo.upsert_item(item, status=STATUS_SUMMARY_FAILED, error_message=str(exc))
-                repo.add_run_item(run_id, int(row["id"]), "resummarize", STATUS_SUMMARY_FAILED, str(exc))
+                safe_error = redact(exc)
+                repo.upsert_item(item, status=STATUS_SUMMARY_FAILED, error_message=safe_error)
+                repo.add_run_item(run_id, int(row["id"]), "resummarize", STATUS_SUMMARY_FAILED, safe_error)
                 report.failed_count += 1
                 report.summary_failed_count += 1
-                report.failures.append(f"{item.column_name}/{item.title}: {exc}")
+                add_report_item(report.summary_failed_by_column, item.column_name, item.title, exc)
+                report.failures.append(redact(f"{item.column_name}/{item.title}: {exc}"))
         report.status = final_run_status(report)
         return report, run_id
     finally:

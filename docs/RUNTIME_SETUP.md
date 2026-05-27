@@ -64,6 +64,20 @@ FEISHU_WEBHOOK_SECRET=
 
 `FEISHU_WEBHOOK_SECRET` 只有在飞书机器人开启签名校验时才需要填写。
 
+如果不希望飞书通知里出现新增内容标题或失败条目标题，可以在 `config.yaml` 中设置：
+
+```yaml
+feishu:
+  include_titles: false
+```
+
+如果要完全关闭飞书通知，设置：
+
+```yaml
+feishu:
+  enabled: false
+```
+
 ## 5. 首次登录
 
 ```powershell
@@ -71,6 +85,8 @@ FEISHU_WEBHOOK_SECRET=
 ```
 
 浏览器打开后手动登录得到。登录完成后回到终端按 Enter，程序会保存登录态到 `data/auth/dedao_state.json`。
+
+`doctor` 和 `preflight` 会检查该文件是否是有效的 Playwright `storage_state` JSON，并且至少包含 cookies 或 origins。若文件为空、损坏或只是 `{}`，请重新执行登录命令。
 
 ## 6. 页面结构调试
 
@@ -87,6 +103,16 @@ data/page_snapshots/
 ```
 
 该目录已加入 `.gitignore`，因为页面快照可能包含登录后可见内容。
+
+如果同步时正文提取失败，需要保留失败详情页 HTML 便于离线分析，可临时在 `config.yaml` 中启用：
+
+```yaml
+dedao:
+  save_failure_html: true
+  failure_snapshot_dir: "data/page_failures"
+```
+
+该开关默认关闭。保存的 HTML 可能包含会员可见内容，仅用于本地调试；`data/page_failures/` 已加入 `.gitignore`。失败记录和 `list --failed` / `list --run-id` 会显示对应 HTML 路径。
 
 离线检查快照质量：
 
@@ -135,6 +161,8 @@ data/page_snapshots/
 
 摘要服务会要求模型输出 JSON，程序再渲染为 Obsidian 中的卡片笔记结构。解析器也兼容模型偶发输出的 Markdown 章节，但稳定运行时应优先使用 JSON 输出。
 
+超长全文在 MVP 中只会发送前 30000 字给摘要模型。程序会要求模型在永久笔记中标注“基于截断原文”；如果模型遗漏，程序会本地补上该说明。
+
 ## 7. 同步流程
 
 先检查：
@@ -144,9 +172,12 @@ data/page_snapshots/
 .venv\Scripts\dedao-sync.exe doctor --config config.yaml --json
 .venv\Scripts\dedao-sync.exe preflight --config config.yaml
 .venv\Scripts\dedao-sync.exe check --config config.yaml
+.venv\Scripts\dedao-sync.exe sync --config config.yaml --dry-run
 ```
 
 `preflight` 默认会检查 Playwright 是否已安装。如果只是验证配置文件和 vault 路径，可以临时加 `--no-browser`。如需确认 Obsidian 输出目录可写，可额外加 `--probe-vault-write`，它会创建并删除一个临时探针文件；同步盘较慢时不建议把该选项放进每日定时任务。
+
+`check` 是手动检查命令，只访问栏目列表并统计新内容；它不会写 Markdown、不会把新条目写入去重库，也不会发送飞书通知。`sync --dry-run` 也不会写 Markdown 或发送飞书通知，适合在改配置、改栏目列表选择器后演练发现和去重流程。
 
 当前版本还没有真正接入转录引擎。请保持 `transcription.enabled: false`；如果改成 `true`，`preflight` 会失败，避免误以为无文字稿内容已经能自动转录。
 
@@ -164,7 +195,7 @@ data/page_snapshots/
 .venv\Scripts\dedao-sync.exe retry-failed --config config.yaml
 ```
 
-`retry-failed` 会处理 `failed`、`extractor_failed`、`missing_transcript`、`summary_failed` 和 `transcription_failed`。
+`retry-failed` 会处理 `failed`、`extractor_failed`、`missing_transcript`、`summary_failed` 和 `transcription_failed`。如果 `summary_failed` 条目已有 `file_path` 且全文仍在原笔记中，命令会原地覆盖补摘要，不会创建第二份 Markdown。
 
 重跑摘要：
 
@@ -179,6 +210,8 @@ data/page_snapshots/
 ```
 
 `summary-test` 会用一段本地样本文稿调用当前配置的摘要模型，验证 OpenCode GO base URL、API key、模型返回格式和解析器是否可用。
+
+当全文已经成功写入但摘要失败时，条目状态会是 `summary_failed`，同时保留 `file_path`、`has_transcript=1` 和 `synced_at`。这表示正文笔记已经在 Obsidian 中，后续用 `resummarize` 或 `retry-failed` 补摘要即可。
 
 查看最近执行历史：
 
@@ -206,7 +239,7 @@ data/page_snapshots/
 
 如果通知失败，命令会返回非零并输出 `notification failed: ...`。常见原因包括当前终端不能访问外网、webhook/secret 配置错误，或飞书机器人安全策略未放行。
 
-飞书通知只发送运行摘要、标题列表、失败摘要和日志路径，不发送全文稿。通知中会包含运行机器、执行时间、耗时、总栏目数、新增/跳过/失败/无文字稿/摘要失败计数。
+飞书通知只发送运行摘要、标题列表、失败摘要和日志路径，不发送全文稿。通知中会包含运行机器、执行时间、耗时、总栏目数、新增/跳过/失败/无文字稿/摘要失败计数，并按栏目列出无文字稿/待处理条目和摘要失败条目。若 `feishu.include_titles: false`，通知会隐藏这些条目标题和失败明细，只保留计数与日志路径。
 
 如果飞书通知遗漏或定时任务静默失败，优先用 `list --runs` 查看最近执行状态，再根据输出中的 `log=` 路径打开对应日志。若某次执行是 `partial_failed`，可用 `list --run-id <id>` 查看该次执行的条目动作，也可用 `list --failed` 查看仍需处理的失败类条目。
 

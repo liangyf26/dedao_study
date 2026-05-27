@@ -5,6 +5,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from typing import Any
 
 from .models import ContentDetail, SummaryConfig, SummaryResult
@@ -63,7 +64,7 @@ class OpenAICompatibleSummaryService(SummaryService):
             content = parsed["choices"][0]["message"]["content"]
         except (KeyError, IndexError, json.JSONDecodeError) as exc:
             raise SummaryError(redact(body)) from exc
-        return parse_summary_text(content)
+        return finalize_summary_result(detail, parse_summary_text(content))
 
 
 def build_summary_prompt(detail: ContentDetail) -> str:
@@ -107,6 +108,17 @@ def parse_summary_text(text: str) -> SummaryResult:
     if parsed is not None:
         return _ensure_summary_has_content(parsed, text)
     return _ensure_summary_has_content(_parse_summary_markdown(text), text)
+
+
+def finalize_summary_result(detail: ContentDetail, result: SummaryResult) -> SummaryResult:
+    if len(detail.transcript_text) <= MAX_TRANSCRIPT_CHARS:
+        return result
+    note = result.permanent_note.strip()
+    if "截断原文" in note:
+        return result
+    truncation_notice = "注：本文摘要基于截断原文生成。"
+    permanent_note = f"{note}\n\n{truncation_notice}" if note else truncation_notice
+    return replace(result, permanent_note=permanent_note)
 
 
 def _ensure_summary_has_content(result: SummaryResult, raw_text: str) -> SummaryResult:

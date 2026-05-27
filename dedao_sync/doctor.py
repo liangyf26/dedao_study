@@ -6,6 +6,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .browser import validate_storage_state_file
 from .config import ConfigError, load_config
 from .preflight import check_config_semantics
 
@@ -70,11 +71,12 @@ def run_doctor(config_path: str | Path = "config.yaml", *, require_auth: bool = 
             str(config.obsidian.vault_path),
         )
     )
+    auth_ok, auth_message = validate_storage_state_file(config.dedao.auth_state_path)
     checks.append(
         DoctorCheck(
             "auth_state",
-            "ok" if config.dedao.auth_state_path.exists() else ("error" if require_auth else "warn"),
-            str(config.dedao.auth_state_path),
+            "ok" if auth_ok else ("error" if require_auth else "warn"),
+            str(config.dedao.auth_state_path) if auth_ok else auth_message,
         )
     )
     checks.append(

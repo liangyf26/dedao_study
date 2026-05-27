@@ -5,7 +5,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-from dedao_sync.models import ContentItem, RunReport, STATUS_SYNCED
+from dedao_sync.models import ContentItem, RunReport, STATUS_SUMMARY_FAILED, STATUS_SYNCED
 from dedao_sync.repository import SyncRepository
 
 
@@ -76,6 +76,89 @@ class RepositoryTests(unittest.TestCase):
             self.assertEqual(rows[0]["new_count"], 2)
             self.assertEqual(rows[0]["success_count"], 2)
             self.assertEqual(rows[0]["log_path"], str(Path("logs/run.log")))
+
+    def test_repository_redacts_sensitive_error_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = SyncRepository(Path(tmp) / "sync.sqlite3")
+            repo.migrate()
+            item = ContentItem(
+                source_url="https://example.com/a",
+                detail_url="https://example.com/a",
+                dedao_id="a",
+                column_name="栏目",
+                title="标题",
+            )
+            item_id = repo.upsert_item(
+                item,
+                status="failed",
+                error_message="Authorization: Bearer abc.def and Cookie: sessionid=secret-cookie",
+            )
+            report = RunReport(started_at=datetime.now())
+            run_id = repo.start_run(report)
+            repo.add_run_item(run_id, item_id, "sync", "failed", "api_key=sk-test")
+            report.status = "partial_failed"
+            report.finished_at = datetime.now()
+            repo.finish_run(run_id, report, "secret=run-secret")
+
+            item_rows = repo.list_items()
+            run_rows = repo.list_runs()
+            run_item_rows = repo.list_run_items(run_id)
+            stored = "\n".join(
+                [
+                    item_rows[0]["error_message"],
+                    run_rows[0]["error_message"],
+                    run_item_rows[0]["message"],
+                ]
+            )
+            self.assertIn("[REDACTED]", stored)
+            self.assertNotIn("abc.def", stored)
+            self.assertNotIn("secret-cookie", stored)
+            self.assertNotIn("sk-test", stored)
+            self.assertNotIn("run-secret", stored)
+
+    def test_summary_failed_with_saved_transcript_sets_synced_at(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = SyncRepository(Path(tmp) / "sync.sqlite3")
+            repo.migrate()
+            item = ContentItem(
+                source_url="https://example.com/summary-failed",
+                detail_url="https://example.com/summary-failed",
+                dedao_id="summary-failed",
+                column_name="栏目",
+                title="标题",
+            )
+
+            repo.upsert_item(
+                item,
+                status=STATUS_SUMMARY_FAILED,
+                content_hash="hash-summary-failed",
+                file_path="note.md",
+                has_transcript=True,
+                summary_status=STATUS_SUMMARY_FAILED,
+            )
+
+            rows = repo.list_items()
+            self.assertEqual(rows[0]["status"], STATUS_SUMMARY_FAILED)
+            self.assertEqual(rows[0]["has_transcript"], 1)
+            self.assertIsNotNone(rows[0]["synced_at"])
+
+    def test_summary_failed_without_saved_transcript_does_not_set_synced_at(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = SyncRepository(Path(tmp) / "sync.sqlite3")
+            repo.migrate()
+            item = ContentItem(
+                source_url="https://example.com/resummary-failed",
+                detail_url="https://example.com/resummary-failed",
+                dedao_id="resummary-failed",
+                column_name="栏目",
+                title="标题",
+            )
+
+            repo.upsert_item(item, status=STATUS_SUMMARY_FAILED, summary_status=STATUS_SUMMARY_FAILED)
+
+            rows = repo.list_items()
+            self.assertEqual(rows[0]["status"], STATUS_SUMMARY_FAILED)
+            self.assertIsNone(rows[0]["synced_at"])
 
 
 if __name__ == "__main__":

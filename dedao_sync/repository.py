@@ -7,10 +7,15 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .models import ContentItem, RunReport
+from .security import redact
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def should_mark_synced_at(*, status: str, has_transcript: bool, file_path: str | Path | None) -> bool:
+    return status == "synced" or (has_transcript and file_path is not None)
 
 
 class SyncRepository:
@@ -110,6 +115,7 @@ class SyncRepository:
             return int(cur.lastrowid)
 
     def finish_run(self, run_id: int, report: RunReport, error_message: str | None = None) -> None:
+        safe_error = redact(error_message) if error_message else None
         with self.connect() as conn:
             conn.execute(
                 """
@@ -130,7 +136,7 @@ class SyncRepository:
                     report.failed_count,
                     report.missing_transcript_count,
                     report.summary_failed_count,
-                    error_message,
+                    safe_error,
                     run_id,
                 ),
             )
@@ -168,6 +174,8 @@ class SyncRepository:
     ) -> int:
         now = utc_now_iso()
         existing = self.find_existing(item, content_hash)
+        safe_error = redact(error_message) if error_message else None
+        mark_synced_at = should_mark_synced_at(status=status, has_transcript=has_transcript, file_path=file_path)
         with self.connect() as conn:
             if existing:
                 conn.execute(
@@ -176,7 +184,7 @@ class SyncRepository:
                     SET dedao_id = COALESCE(?, dedao_id),
                         canonical_url = COALESCE(?, canonical_url),
                         column_name = ?, title = ?, published_at = ?,
-                        synced_at = CASE WHEN ? = 'synced' THEN ? ELSE synced_at END,
+                        synced_at = CASE WHEN ? THEN ? ELSE synced_at END,
                         content_hash = COALESCE(?, content_hash), status = ?,
                         file_path = COALESCE(?, file_path), has_transcript = ?,
                         transcribed = ?, summary_status = ?, error_message = ?,
@@ -189,7 +197,7 @@ class SyncRepository:
                         item.column_name,
                         item.title,
                         item.published_at,
-                        status,
+                        int(mark_synced_at),
                         now,
                         content_hash,
                         status,
@@ -197,7 +205,7 @@ class SyncRepository:
                         int(has_transcript),
                         int(transcribed),
                         summary_status,
-                        error_message,
+                        safe_error,
                         now,
                         existing["id"],
                     ),
@@ -219,14 +227,14 @@ class SyncRepository:
                     item.column_name,
                     item.title,
                     item.published_at,
-                    now if status == "synced" else None,
+                    now if mark_synced_at else None,
                     content_hash,
                     status,
                     str(file_path) if file_path else None,
                     int(has_transcript),
                     int(transcribed),
                     summary_status,
-                    error_message,
+                    safe_error,
                     now,
                     now,
                 ),
@@ -234,13 +242,14 @@ class SyncRepository:
             return int(cur.lastrowid)
 
     def add_run_item(self, run_id: int, item_id: int, action: str, status: str, message: str | None = None) -> None:
+        safe_message = redact(message) if message else None
         with self.connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO run_items (run_id, item_id, action, status, message)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (run_id, item_id, action, status, message),
+                (run_id, item_id, action, status, safe_message),
             )
 
     def list_items_by_status(self, statuses: tuple[str, ...], limit: int = 50) -> list[dict[str, Any]]:

@@ -93,6 +93,8 @@ dedao:
   browser_profile_dir: "data/browser_profile"
   headless: false
   request_interval_seconds: 2
+  save_failure_html: false
+  failure_snapshot_dir: "data/page_failures"
   columns:
     - name: "快刀青衣·快刀广播站"
       url: "https://aiquan.dedao.cn/courseList?type=1"
@@ -124,6 +126,7 @@ feishu:
   enabled: true
   webhook_url_env: "FEISHU_WEBHOOK_URL"
   secret_env: "FEISHU_WEBHOOK_SECRET"
+  include_titles: true
 ```
 
 `.env.example`：
@@ -153,6 +156,8 @@ Playwright 官方支持保存 cookies、localStorage、IndexedDB 等登录状态
 - `dedao-sync login` 使用 headful Chromium。
 - 用户手动登录。
 - 登录成功后保存 `storage_state`，并可选保留 persistent profile。
+- 保存后校验 `storage_state` 文件：必须是 JSON object，包含 Playwright 的 `cookies` 和 `origins` 列表，且至少有一项非空。
+- `doctor` 和 `preflight` 复用同一校验逻辑，避免空文件、坏 JSON 或 `{}` 被误认为已登录。
 - `sync` 命令优先使用已保存的 state。
 - 如果检测到登录失效，退出并提示重新运行 `login`。
 
@@ -206,6 +211,7 @@ Obscura 官方仓库描述其为 Rust 编写的 headless browser engine，面向
 - 清洗无关 UI 文本。
 - 保留段落结构。
 - 判断是否缺少文字稿。
+- 从详情页 HTML 元数据中补全真实标题、作者/讲者和发布时间，优先读取 `og:title`、`author`、`article:published_time`、`time[datetime]`、`h1` 和 `title`。
 
 ### 6.2 页面结构适配
 
@@ -249,6 +255,8 @@ ContentDetail(
     raw_html_hash,
 )
 ```
+
+同步流程以详情页 `ContentDetail.item` 为准写入 Markdown、SQLite 和飞书新增列表，避免栏目列表标题与详情页真实标题不一致。
 
 ## 7. 数据库设计
 
@@ -341,7 +349,7 @@ CREATE TABLE run_items (
 推荐规则：
 
 - 已成功写入 Markdown：`synced`
-- 有全文但摘要失败：`summary_failed`
+- 有全文但摘要失败：`summary_failed`，同时保留 `file_path`、`has_transcript=1` 和 `synced_at`，表示全文已保存但摘要仍需重试。
 - 无网页文字稿且转录未启用：`missing_transcript`
 - 单篇异常：`failed`
 
@@ -390,7 +398,7 @@ class SummaryService:
 - 程序内部将 JSON 解析为结构化 `SummaryResult`，再渲染为 Obsidian Markdown。
 - 为兼容模型偶发偏离，解析器保留 Markdown 章节兜底，支持中文标题、编号标题和代码块包裹的 JSON。
 - 如果模型返回空 JSON、无可识别字段或普通闲聊文本，解析器必须抛出 `SummaryError`，由同步流程标记为 `summary_failed`。
-- MVP 对超长全文只发送前 30000 字给摘要模型，并在 prompt 中要求模型标注“基于截断原文”。
+- MVP 对超长全文只发送前 30000 字给摘要模型，并在 prompt 中要求模型标注“基于截断原文”；如果模型遗漏，程序会在 `permanent_note` 中本地补上截断说明。
 
 ### 9.2 API Adapter
 
@@ -515,6 +523,12 @@ class Notifier:
 失败：
 - 马江博-政经参考：登录态失效
 
+无文字稿/待处理：
+- 长谈：xxx
+
+摘要失败：
+- 尹烨·健康参考：xxx
+
 日志：D:\Project\603_dedao_study\logs\2026-05-26.log
 ```
 
@@ -523,6 +537,9 @@ class Notifier:
 - 飞书通知失败不影响同步结果。
 - 通知失败写入日志。
 - `notify-test` 命令用于验证 webhook、secret 和网络可用性。
+- 通知不发送全文稿；对 `missing_transcript`/`extractor_failed` 和 `summary_failed` 提供按栏目分组的标题明细，方便从每日通知直接定位后续动作。
+- 若 `feishu.include_titles: false`，通知只发送计数、状态和日志路径，不发送新增/失败条目标题或失败明细。
+- 若 `feishu.enabled: false`，即使环境变量中存在 webhook，也不发送飞书通知。
 
 参考：
 
@@ -539,6 +556,7 @@ class Notifier:
 dedao-sync login
 dedao-sync check
 dedao-sync sync
+dedao-sync sync --dry-run
 dedao-sync sync --column "长谈"
 dedao-sync retry-failed
 dedao-sync resummarize
@@ -555,10 +573,11 @@ dedao-sync list --status extractor_failed
 
 - `login`：打开浏览器，保存登录态。
 - `preflight`：验证配置、vault、登录态、Playwright 依赖；可用 `--no-browser` 只检查非浏览器条件，可用 `--probe-vault-write` 显式测试 Obsidian 输出目录可写。
-- `check`：只检查新内容，不写 Markdown。
+- `check`：只检查新内容，不写 Markdown，不写入新条目去重库，不发送飞书通知。
 - `sync`：完整同步。
+- `sync --dry-run`：演练登录、预检查、栏目列表发现和去重判断，但不抓详情、不摘要、不写 Markdown、不发送飞书通知；用于改配置、改栏目列表选择器后的手动验证。
 - `sync --column`：只同步指定栏目；如果栏目名没有匹配任何启用栏目，返回 `preflight_failed`，避免静默空跑。
-- `retry-failed`：重试失败类条目，包括 `failed`、`extractor_failed`、`missing_transcript`、`summary_failed`、`transcription_failed`。
+- `retry-failed`：重试失败类条目，包括 `failed`、`extractor_failed`、`missing_transcript`、`summary_failed`、`transcription_failed`。对于已有 `file_path` 的 `summary_failed`，优先从原笔记提取全文并覆盖原文件补摘要，避免重复创建 Markdown。
 - `resummarize`：重新生成摘要。
 - `summary-test`：用本地样本文稿验证摘要 API、模型返回和解析器。
 - `notify-test`：发送测试飞书消息。
@@ -619,6 +638,12 @@ dedao-sync.timer
 - `duration_ms`
 - `error`
 
+安全要求：
+
+- 日志 formatter 会对 token、cookie、API key、secret 和飞书 webhook 做脱敏。
+- SQLite 中的 `items.error_message`、`runs.error_message`、`run_items.message` 在写入前同样脱敏。
+- `list`、`list --failed`、`list --run-id` 和同步命令的失败输出在展示前再次脱敏，避免历史数据或外部异常消息泄露凭证。
+
 ## 16. 错误处理
 
 | 场景 | 处理 |
@@ -630,6 +655,12 @@ dedao-sync.timer
 | 飞书失败 | 写日志，不影响同步 |
 | 页面结构变化 | 标记 extractor 失败，保留 HTML 片段用于排查 |
 | Obsidian 写入失败 | 标记失败，不更新为 synced |
+
+页面结构调试补充：
+
+- `save_failure_html` 默认关闭，避免自动保存会员可见页面 HTML。
+- 调试期临时开启后，详情页正文提取失败时会保存 HTML 到 `failure_snapshot_dir`，并把路径写入 `items.error_message` 和 `run_items.message`。
+- `data/page_failures/` 必须加入 `.gitignore`，保存的 HTML 只用于本地排查，不进入仓库或通知正文。
 
 ## 17. 合规边界
 

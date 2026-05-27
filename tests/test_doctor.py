@@ -8,6 +8,9 @@ from pathlib import Path
 from dedao_sync.doctor import doctor_checks_to_dicts, doctor_exit_code, run_doctor
 
 
+VALID_AUTH_STATE = '{"cookies":[{"name":"sid","value":"test","domain":".dedao.cn","path":"/"}],"origins":[]}'
+
+
 def write_config(root: Path, *, overrides: dict | None = None) -> Path:
     vault = root / "vault"
     vault.mkdir()
@@ -68,6 +71,34 @@ class DoctorTests(unittest.TestCase):
             checks = run_doctor(config_path, require_auth=True)
             by_name = {check.name: check for check in checks}
             self.assertEqual(by_name["auth_state"].status, "error")
+            self.assertEqual(doctor_exit_code(checks), 1)
+
+    def test_doctor_reports_valid_auth_as_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+
+            checks = run_doctor(config_path, require_auth=True)
+
+            by_name = {check.name: check for check in checks}
+            self.assertEqual(by_name["auth_state"].status, "ok")
+
+    def test_doctor_reports_invalid_auth_as_error_when_required(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text("{}", encoding="utf-8")
+
+            checks = run_doctor(config_path, require_auth=True)
+
+            by_name = {check.name: check for check in checks}
+            self.assertEqual(by_name["auth_state"].status, "error")
+            self.assertIn("auth state", by_name["auth_state"].message)
             self.assertEqual(doctor_exit_code(checks), 1)
 
     def test_doctor_checks_to_dicts(self):

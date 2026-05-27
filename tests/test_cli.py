@@ -46,6 +46,22 @@ class CliTests(unittest.TestCase):
             self.assertTrue(isinstance(parsed, list))
             self.assertIn("name", parsed[0])
 
+    def test_sync_dry_run_skips_notification(self):
+        report = RunReport(started_at=datetime(2026, 5, 27, 8, 0, 0), status="success")
+        output = io.StringIO()
+        with mock.patch("dedao_sync.cli.run_sync", return_value=(report, 1)) as run_sync:
+            with contextlib.redirect_stdout(output):
+                code = main(["sync", "--config", "config.yaml", "--dry-run"])
+
+        self.assertEqual(code, 0)
+        run_sync.assert_called_once_with(
+            "config.yaml",
+            column_name=None,
+            dry_run=True,
+            send_notification=False,
+        )
+        self.assertIn("sync status: success", output.getvalue())
+
     def test_parse_snapshot_show_candidates(self):
         with tempfile.TemporaryDirectory() as tmp:
             html = Path(tmp) / "page.html"
@@ -186,6 +202,30 @@ class CliTests(unittest.TestCase):
             self.assertIn("失败标题", text)
             self.assertIn("页面结构变化", text)
             self.assertNotIn("成功标题", text)
+
+    def test_list_failed_redacts_sensitive_error_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(main(["init", "--root", str(root)]), 0)
+            repo = SyncRepository(default_db_path(root))
+            repo.migrate()
+            failed = ContentItem(
+                source_url="https://example.com/failed",
+                detail_url="https://example.com/failed",
+                dedao_id="failed",
+                column_name="栏目",
+                title="失败标题",
+            )
+            repo.upsert_item(failed, status=STATUS_FAILED, error_message="Authorization: Bearer abc.def")
+
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = main(["list", "--config", str(root / "config.yaml"), "--failed"])
+
+            self.assertEqual(code, 0)
+            text = output.getvalue()
+            self.assertIn("[REDACTED]", text)
+            self.assertNotIn("abc.def", text)
 
     def test_list_run_id_outputs_item_actions(self):
         with tempfile.TemporaryDirectory() as tmp:

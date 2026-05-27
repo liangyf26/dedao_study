@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
@@ -93,10 +94,26 @@ class DedaoCrawler:
                         author=item.author,
                         content_type=item.content_type,
                     )
-                return self.extractor.from_html(item, html)
+                detail = self.extractor.from_html(item, html)
+                if not detail.has_transcript and self.config.dedao.save_failure_html:
+                    path = self._save_failure_html(detail.item, html, detail.raw_html_hash)
+                    detail = replace(detail, diagnostic_path=path)
+                return detail
             finally:
                 browser.close()
                 time.sleep(self.config.dedao.request_interval_seconds)
+
+    def _save_failure_html(self, item: ContentItem, html: str, raw_html_hash: str | None) -> Path:
+        output_dir = self.config.dedao.failure_snapshot_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        parsed = urlparse(item.detail_url or item.source_url)
+        slug_source = "_".join(part for part in (parsed.netloc, parsed.path.strip("/"), item.dedao_id or item.title) if part)
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "_", slug_source).strip("_") or "detail"
+        digest = (raw_html_hash or "").strip()[:12] or "nohash"
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = output_dir / f"{stamp}-{slug[:80]}-{digest}.html"
+        target.write_text(html, encoding="utf-8")
+        return target
 
     def inspect_page(self, url: str, output_dir: str | Path) -> Path:
         output_dir = Path(output_dir)

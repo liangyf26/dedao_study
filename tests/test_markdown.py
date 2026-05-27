@@ -22,7 +22,15 @@ from dedao_sync.models import (
 def make_config(root: Path) -> AppConfig:
     return AppConfig(
         obsidian=ObsidianConfig(root, "得到", "{column}-{published_date}-{title}.md"),
-        dedao=DedaoConfig(root / "auth.json", root / "profile", False, 2, (ColumnConfig("栏目", "https://example.com"),)),
+        dedao=DedaoConfig(
+            root / "auth.json",
+            root / "profile",
+            False,
+            2,
+            False,
+            root / "page_failures",
+            (ColumnConfig("栏目", "https://example.com"),),
+        ),
         summary=SummaryConfig(False, "x", "x", "BASE", "KEY"),
         transcription=TranscriptionConfig(False, "x", True, root / "media"),
         feishu=FeishuConfig(False, "WEBHOOK", "SECRET"),
@@ -68,4 +76,3 @@ class MarkdownTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

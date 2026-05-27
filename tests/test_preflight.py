@@ -10,6 +10,9 @@ from dedao_sync.config import load_config
 from dedao_sync.preflight import PreflightChecker
 
 
+VALID_AUTH_STATE = '{"cookies":[{"name":"sid","value":"test","domain":".dedao.cn","path":"/"}],"origins":[]}'
+
+
 def write_config(root: Path, *, transcription_enabled: bool = False, overrides: dict | None = None) -> Path:
     vault = root / "vault"
     vault.mkdir()
@@ -60,7 +63,7 @@ class PreflightTests(unittest.TestCase):
             config = load_config(write_config(root))
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
 
             with mock.patch("dedao_sync.preflight.importlib.util.find_spec", return_value=None):
                 result = PreflightChecker(config, require_browser=True).check()
@@ -74,12 +77,25 @@ class PreflightTests(unittest.TestCase):
             config = load_config(write_config(root))
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
 
             with mock.patch("dedao_sync.preflight.importlib.util.find_spec", return_value=None):
                 result = PreflightChecker(config, require_browser=False).check()
 
             self.assertTrue(result.ok)
+
+    def test_invalid_auth_state_is_error_when_auth_required(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = load_config(write_config(root))
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text("{}", encoding="utf-8")
+
+            result = PreflightChecker(config, require_auth=True).check()
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("Dedao auth state invalid" in error for error in result.errors))
 
     def test_output_dir_is_created_and_probe_file_is_removed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -87,7 +103,7 @@ class PreflightTests(unittest.TestCase):
             config = load_config(write_config(root))
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
 
             result = PreflightChecker(config, probe_vault_write=True).check()
 
@@ -102,7 +118,7 @@ class PreflightTests(unittest.TestCase):
             config = load_config(write_config(root))
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
 
             with mock.patch("dedao_sync.preflight.tempfile.mkstemp", side_effect=OSError("locked")):
                 result = PreflightChecker(config, probe_vault_write=True).check()
@@ -116,12 +132,37 @@ class PreflightTests(unittest.TestCase):
             config = load_config(write_config(root, transcription_enabled=True))
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
 
             result = PreflightChecker(config).check()
 
             self.assertFalse(result.ok)
             self.assertTrue(any("Transcription is not implemented" in error for error in result.errors))
+
+    def test_failure_snapshot_dir_is_checked_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bad_path = root / "not-a-dir"
+            bad_path.write_text("file", encoding="utf-8")
+            config = load_config(
+                write_config(
+                    root,
+                    overrides={
+                        "dedao": {
+                            "save_failure_html": True,
+                            "failure_snapshot_dir": str(bad_path),
+                        },
+                    },
+                )
+            )
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+
+            result = PreflightChecker(config).check()
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("Failure HTML snapshot" in error for error in result.errors))
 
     def test_config_semantics_are_checked(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -144,7 +185,7 @@ class PreflightTests(unittest.TestCase):
             )
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
 
             result = PreflightChecker(config).check()
 
@@ -171,7 +212,7 @@ class PreflightTests(unittest.TestCase):
             )
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
 
             result = PreflightChecker(config).check()
 

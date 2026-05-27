@@ -8,6 +8,10 @@ dedao:
   browser_profile_dir: "data/browser_profile"
   headless: false
   request_interval_seconds: 2
+  # Disabled by default because saved HTML can contain paid content.
+  # Enable only when debugging extractor failures locally.
+  save_failure_html: false
+  failure_snapshot_dir: "data/page_failures"
   columns:
     - name: "快刀青衣·快刀广播站"
       url: "https://aiquan.dedao.cn/courseList?type=1"
@@ -39,4 +43,4 @@ feishu:
   enabled: true
   webhook_url_env: "FEISHU_WEBHOOK_URL"
   secret_env: "FEISHU_WEBHOOK_SECRET"
-
+  include_titles: true

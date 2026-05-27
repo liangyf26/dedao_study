@@ -55,7 +55,7 @@
 | 数据库损坏 | P1 | 任务中断导致状态不一致 | SQLite 事务；先写文件再提交 synced；定期备份 DB | 中断恢复测试 |
 | Markdown frontmatter 破坏 | P2 | 标题含冒号/换行导致 YAML 无效 | 使用 YAML serializer，不手拼 frontmatter | YAML parse test |
 | 时区和日期错误 | P2 | 发布时间/同步时间混淆 | 所有运行时间用 Asia/Shanghai；原始发布时间保留字符串和解析值 | 日期样本测试 |
-| 内容超长导致摘要失败 | P2 | 模型上下文超限；截断后摘要可能被误认为覆盖全文 | 分块摘要 + 合并摘要；MVP 先截断并要求摘要标注“基于截断原文” | 超长文本测试 |
+| 内容超长导致摘要失败 | P2 | 模型上下文超限；截断后摘要可能被误认为覆盖全文 | 分块摘要 + 合并摘要；MVP 先截断、要求摘要标注“基于截断原文”，并在模型遗漏时本地补标注 | 超长文本测试 |
 | 摘要假成功 | P1 | 模型返回空 JSON、闲聊文本或无可识别字段时，系统可能当作成功 | 摘要解析结果必须至少包含一个有效字段，否则抛 `SummaryError` 并标记 `summary_failed` | 空 JSON 和非结构化文本测试 |
 
 第一轮结论：原策略可行，但必须补上 preflight、质量门槛、幂等写入、脱敏、状态机和阶段准入，否则不应直接开发完整自动化。
@@ -126,11 +126,14 @@
 | 漏洞 | 修复状态 | 事实核验 |
 | --- | --- | --- |
 | 页面解析失败只能人工看日志，难以批量比较四个栏目快照 | 已为 `parse-snapshot` 增加 `--json` 机器可读报告，包含正文质量、候选正文、候选条目和输出路径 | 新增 CLI 测试覆盖 JSON 输出；真实快照保存后可固化为回归基线 |
+| 自动保存 HTML 可能泄露会员内容 | `save_failure_html` 默认关闭；仅调试时保存失败详情页 HTML 到 `.gitignore` 覆盖的 `data/page_failures/`，并在失败记录中写入路径 | 配置默认值、保存路径和 sync 失败记录均有单元测试 |
+| 空登录态文件被误判为可用 | `doctor`、`preflight` 和 `login` 保存后校验 Playwright `storage_state` JSON 结构，并要求 cookies/origins 至少一项非空 | 单元测试覆盖有效、坏结构和空 cookies/origins |
 | 配置错误可能到运行时才暴露 | `doctor` 和 `preflight` 已检查栏目、URL、文件命名模板、vault、依赖和环境变量 | `doctor --config config.example.yaml --no-auth --json` 返回 `config_semantics=ok`；`preflight --no-auth --no-browser` 通过 |
 | 文字稿解析误写风险 | extractor 已加入长度、段落、UI 噪声和标题相关性门槛；失败标记为 `extractor_failed` | 单元测试覆盖正文提取、候选诊断和离线快照解析 |
 | 每日运行可能“半失败但显示成功” | run 状态只在失败、无文字稿、摘要失败计数全部为 0 时为 `success`，否则为 `partial_failed` | 单元测试覆盖运行状态、失败列表和 run item 明细 |
 | 摘要接口返回异常格式可能假成功 | 摘要解析要求 JSON 或可识别 Markdown 章节，空/无效返回抛 `SummaryError` 并标记 `summary_failed` | 单元测试覆盖空 JSON、非结构化文本、摘要失败不中断全文保存 |
 | 飞书通知失败可能打印 traceback 或泄露全文 | `notify-test` 捕获异常；通知只发摘要、标题、失败和日志路径 | 单元测试覆盖通知异常；真实 webhook 因当前网络限制尚未连通 |
+| 状态库或 CLI 输出泄露 token/cookie | 已在日志、SQLite 错误字段、run item 明细、CLI 列表/失败输出边界统一脱敏 | 单元测试覆盖 `Authorization`、Cookie、API key、secret 和飞书 webhook |
 
 本轮命令核验：
 

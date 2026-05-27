@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from dedao_sync.extractor import TranscriptExtractor, html_to_candidate_texts, html_to_visible_text
+from dedao_sync.extractor import TranscriptExtractor, extract_metadata, html_to_candidate_texts, html_to_visible_text
 from dedao_sync.models import ContentItem
 
 
@@ -46,6 +46,51 @@ class ExtractorTests(unittest.TestCase):
         self.assertTrue(detail.has_transcript)
         self.assertIn("健康参考这一期", detail.transcript_text)
         self.assertNotIn("下载App", detail.transcript_text)
+
+    def test_from_html_merges_detail_page_metadata(self):
+        item = ContentItem(
+            source_url="https://example.com/list-title",
+            detail_url="https://example.com/detail",
+            column_name="栏目",
+            title="列表页标题",
+        )
+        html = """
+        <html>
+          <head>
+            <meta property="og:title" content="健康参考 真实标题 - 得到">
+            <meta name="author" content="尹烨">
+            <meta property="article:published_time" content="2026-05-27T08:00:00+08:00">
+          </head>
+          <body>
+            <article>
+              <h1>健康参考 真实标题</h1>
+              <p>健康参考 真实标题这一期先交代背景、事实和判断依据，形成足够完整的第一段正文内容。</p>
+              <p>第二段继续展开核心观点，说明适用边界、可能例外，以及为什么不能把这个结论简单套用到所有场景。</p>
+              <p>第三段给出行动建议和复盘问题，帮助读者把内容转化成后续可以观察、记录和重新检查的笔记。</p>
+            </article>
+          </body>
+        </html>
+        """
+        detail = TranscriptExtractor(min_length=120, min_paragraphs=3).from_html(item, html)
+
+        self.assertTrue(detail.has_transcript)
+        self.assertEqual(detail.item.title, "健康参考 真实标题")
+        self.assertEqual(detail.item.author, "尹烨")
+        self.assertEqual(detail.item.published_at, "2026-05-27T08:00:00+08:00")
+
+    def test_extract_metadata_falls_back_to_time_h1_and_title(self):
+        html = """
+        <html>
+          <head><title>健康参考 H1 标题 | 得到</title></head>
+          <body>
+            <time datetime="2026-05-27">今天</time>
+            <h1>健康参考 H1 标题</h1>
+          </body>
+        </html>
+        """
+        metadata = extract_metadata(html)
+        self.assertEqual(metadata.title, "健康参考 H1 标题")
+        self.assertEqual(metadata.published_at, "2026-05-27")
 
     def test_html_candidate_texts_include_article_and_page(self):
         html = "<main><p>健康参考</p><p>第一段</p><p>第二段</p></main><footer>分享</footer>"

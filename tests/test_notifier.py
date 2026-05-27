@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime
+from unittest import mock
 
-from dedao_sync.models import RunReport
-from dedao_sync.notifier import FeishuCredentials, FeishuNotifier, format_run_report, make_feishu_sign
+from dedao_sync.models import FeishuConfig, RunReport
+from dedao_sync.notifier import FeishuCredentials, FeishuNotifier, format_run_report, load_feishu_credentials, make_feishu_sign
 from dedao_sync.security import redact
 
 
@@ -13,6 +14,18 @@ class NotifierTests(unittest.TestCase):
         sign = make_feishu_sign(1234567890, "secret")
         self.assertTrue(sign)
         self.assertNotIn("secret", sign)
+
+    def test_disabled_feishu_ignores_webhook_env(self):
+        with mock.patch.dict("os.environ", {"FEISHU_WEBHOOK_URL": "https://example.com/hook"}):
+            credentials = load_feishu_credentials(
+                FeishuConfig(
+                    enabled=False,
+                    webhook_url_env="FEISHU_WEBHOOK_URL",
+                    secret_env="FEISHU_WEBHOOK_SECRET",
+                )
+            )
+
+        self.assertIsNone(credentials)
 
     def test_payload_omits_full_content(self):
         report = RunReport(
@@ -29,9 +42,17 @@ class NotifierTests(unittest.TestCase):
         self.assertNotIn("全文稿", text)
 
     def test_redact(self):
-        text = redact("Authorization: Bearer abc.def and https://open.feishu.cn/open-apis/bot/v2/hook/abcdef")
+        text = redact(
+            "Authorization: Bearer abc.def and "
+            "Cookie: sessionid=secret-cookie; user=liang and "
+            "api_key=sk-test and "
+            "https://open.feishu.cn/open-apis/bot/v2/hook/abcdef"
+        )
         self.assertIn("[REDACTED]", text)
         self.assertNotIn("abc.def", text)
+        self.assertNotIn("secret-cookie", text)
+        self.assertNotIn("sk-test", text)
+        self.assertNotIn("abcdef", text)
 
     def test_report_format(self):
         report = RunReport(started_at=datetime.now(), finished_at=datetime.now(), status="success", total_columns=4)
@@ -63,6 +84,55 @@ class NotifierTests(unittest.TestCase):
         self.assertIn("失败文章数：1", text)
         self.assertIn("无文字稿文章数：1", text)
         self.assertIn("摘要失败数：1", text)
+        self.assertNotIn("abc.def", text)
+
+    def test_report_includes_actionable_partial_failure_details(self):
+        report = RunReport(
+            started_at=datetime(2026, 5, 27, 8, 0, 0),
+            finished_at=datetime(2026, 5, 27, 8, 1, 0),
+            status="partial_failed",
+            missing_transcript_count=1,
+            summary_failed_count=1,
+            missing_by_column={"栏目A": ["无文字稿标题（too_short）"]},
+            summary_failed_by_column={"栏目B": ["摘要失败标题（Authorization: Bearer abc.def）"]},
+        )
+
+        text = format_run_report(report)
+
+        self.assertIn("无文字稿/待处理：", text)
+        self.assertIn("栏目A：无文字稿标题", text)
+        self.assertIn("摘要失败：", text)
+        self.assertIn("栏目B：摘要失败标题", text)
+        self.assertNotIn("abc.def", text)
+
+    def test_report_can_hide_item_titles(self):
+        report = RunReport(
+            started_at=datetime(2026, 5, 27, 8, 0, 0),
+            finished_at=datetime(2026, 5, 27, 8, 1, 0),
+            status="partial_failed",
+            new_count=1,
+            added_by_column={"栏目A": ["敏感标题"]},
+            failures=["栏目A/敏感标题: api failed"],
+        )
+
+        text = format_run_report(report, include_titles=False)
+
+        self.assertIn("新增文章数：1", text)
+        self.assertIn("已按配置隐藏标题", text)
+        self.assertNotIn("敏感标题", text)
+        self.assertNotIn("api failed", text)
+
+    def test_report_redacts_added_titles(self):
+        report = RunReport(
+            started_at=datetime(2026, 5, 27, 8, 0, 0),
+            finished_at=datetime(2026, 5, 27, 8, 1, 0),
+            status="success",
+            added_by_column={"栏目A": ["Authorization: Bearer abc.def"]},
+        )
+
+        text = format_run_report(report)
+
+        self.assertIn("[REDACTED]", text)
         self.assertNotIn("abc.def", text)
 
 

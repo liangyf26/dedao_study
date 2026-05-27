@@ -26,6 +26,7 @@ from .preflight import PreflightChecker
 from .repository import SyncRepository
 from .sync import default_db_path, run_preflight, run_resummarize, run_retry_failed, run_sync
 from .snapshot import parse_snapshot
+from .security import redact
 from .summarizer import SummaryError, create_summary_service
 
 
@@ -93,18 +94,23 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def cmd_check(args: argparse.Namespace) -> int:
-    report, _ = run_sync(args.config, column_name=args.column, dry_run=True)
+    report, _ = run_sync(args.config, column_name=args.column, dry_run=True, send_notification=False)
     print(f"check status: {report.status}")
     for failure in report.failures:
-        print(f"ERROR: {failure}", file=sys.stderr)
+        print(f"ERROR: {redact(failure)}", file=sys.stderr)
     return 0 if report.status == "success" else 1
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
-    report, _ = run_sync(args.config, column_name=args.column, dry_run=args.dry_run)
+    report, _ = run_sync(
+        args.config,
+        column_name=args.column,
+        dry_run=args.dry_run,
+        send_notification=not args.dry_run,
+    )
     print(f"sync status: {report.status}")
     for failure in report.failures:
-        print(f"ERROR: {failure}", file=sys.stderr)
+        print(f"ERROR: {redact(failure)}", file=sys.stderr)
     return 0 if report.status == "success" else 1
 
 
@@ -112,7 +118,7 @@ def cmd_retry_failed(args: argparse.Namespace) -> int:
     report, _ = run_retry_failed(args.config, limit=args.limit)
     print(f"retry status: {report.status}")
     for failure in report.failures:
-        print(f"ERROR: {failure}", file=sys.stderr)
+        print(f"ERROR: {redact(failure)}", file=sys.stderr)
     return 0 if report.status == "success" else 1
 
 
@@ -120,13 +126,13 @@ def cmd_resummarize(args: argparse.Namespace) -> int:
     report, _ = run_resummarize(args.config, limit=args.limit)
     print(f"resummarize status: {report.status}")
     for failure in report.failures:
-        print(f"ERROR: {failure}", file=sys.stderr)
+        print(f"ERROR: {redact(failure)}", file=sys.stderr)
     return 0 if report.status == "success" else 1
 
 
 def cmd_notify_test(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    notifier = FeishuNotifier(load_feishu_credentials(config.feishu))
+    notifier = FeishuNotifier(load_feishu_credentials(config.feishu), include_titles=config.feishu.include_titles)
     report = RunReport(
         started_at=datetime.now(),
         finished_at=datetime.now(),
@@ -137,7 +143,7 @@ def cmd_notify_test(args: argparse.Namespace) -> int:
     try:
         sent = notifier.send_run_report(report)
     except NotificationError as exc:
-        print(f"notification failed: {exc}", file=sys.stderr)
+        print(f"notification failed: {redact(exc)}", file=sys.stderr)
         return 1
     print("notification sent" if sent else "notification skipped: webhook not configured")
     return 0
@@ -167,7 +173,7 @@ def cmd_summary_test(args: argparse.Namespace) -> int:
     try:
         summary = create_summary_service(config.summary).summarize(detail)
     except SummaryError as exc:
-        print(f"summary failed: {exc}", file=sys.stderr)
+        print(f"summary failed: {redact(exc)}", file=sys.stderr)
         return 1
     print("summary ok")
     print(f"atomic_cards={len(summary.atomic_cards)}")
@@ -264,7 +270,7 @@ def cmd_list(args: argparse.Namespace) -> int:
             message = row["message"] or row["error_message"] or row["file_path"] or ""
             print(
                 f"{row['run_id']}\t{row['item_id']}\t{row['action']}\t{row['run_item_status']}\t"
-                f"{row['column_name'] or ''}\t{row['title'] or ''}\t{message}"
+                f"{row['column_name'] or ''}\t{row['title'] or ''}\t{redact(message)}"
             )
         return 0
     if args.runs:
@@ -294,7 +300,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         rows = repo.list_items(limit=args.limit)
     for row in rows:
         message = row["error_message"] or row["file_path"] or ""
-        print(f"{row['id']}\t{row['status']}\t{row['column_name']}\t{row['title']}\t{message}")
+        print(f"{row['id']}\t{row['status']}\t{row['column_name']}\t{row['title']}\t{redact(message)}")
     return 0
 
 
@@ -332,7 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync = sub.add_parser("sync", help="Run sync workflow")
     _add_config_arg(sync)
     sync.add_argument("--column", help="Limit sync to one column")
-    sync.add_argument("--dry-run", action="store_true", help="Discover and record without writing notes")
+    sync.add_argument("--dry-run", action="store_true", help="Discover without writing notes or sending notifications")
     sync.set_defaults(func=cmd_sync)
 
     retry_failed = sub.add_parser("retry-failed", help="Retry failed items")
@@ -387,7 +393,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.func(args))
     except ConfigError as exc:
-        print(f"config error: {exc}", file=sys.stderr)
+        print(f"config error: {redact(exc)}", file=sys.stderr)
         return 2
 
 

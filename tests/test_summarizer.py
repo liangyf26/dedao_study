@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from dedao_sync.models import ContentDetail, ContentItem
-from dedao_sync.summarizer import SummaryError, build_summary_prompt, parse_summary_text
+from dedao_sync.models import ContentDetail, ContentItem, SummaryResult
+from dedao_sync.summarizer import SummaryError, build_summary_prompt, finalize_summary_result, parse_summary_text
 
 
 class SummarizerTests(unittest.TestCase):
@@ -77,6 +77,25 @@ class SummarizerTests(unittest.TestCase):
         self.assertIn("只输出 JSON", prompt)
         self.assertIn("基于截断原文", prompt)
         self.assertLess(len(prompt), 32200)
+
+    def test_finalize_summary_adds_truncation_notice_when_model_omits_it(self):
+        item = ContentItem("u", "栏目", "标题", "u")
+        detail = ContentDetail(item=item, transcript_text="x" * 40000, has_transcript=True)
+        result = SummaryResult(atomic_cards=("卡片",), permanent_note="永久笔记")
+
+        finalized = finalize_summary_result(detail, result)
+
+        self.assertIn("永久笔记", finalized.permanent_note)
+        self.assertIn("基于截断原文", finalized.permanent_note)
+
+    def test_finalize_summary_does_not_duplicate_truncation_notice(self):
+        item = ContentItem("u", "栏目", "标题", "u")
+        detail = ContentDetail(item=item, transcript_text="x" * 40000, has_transcript=True)
+        result = SummaryResult(atomic_cards=("卡片",), permanent_note="摘要基于截断原文。")
+
+        finalized = finalize_summary_result(detail, result)
+
+        self.assertEqual(finalized.permanent_note.count("截断原文"), 1)
 
     def test_empty_or_unrecognized_summary_raises(self):
         with self.assertRaises(SummaryError):

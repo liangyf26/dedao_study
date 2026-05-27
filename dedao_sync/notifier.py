@@ -43,6 +43,8 @@ def make_feishu_sign(timestamp: int, secret: str) -> str:
 
 
 def load_feishu_credentials(config: FeishuConfig) -> FeishuCredentials | None:
+    if not config.enabled:
+        return None
     webhook = os.environ.get(config.webhook_url_env, "").strip()
     if not webhook:
         return None
@@ -50,7 +52,7 @@ def load_feishu_credentials(config: FeishuConfig) -> FeishuCredentials | None:
     return FeishuCredentials(webhook_url=webhook, secret=secret)
 
 
-def format_run_report(report: RunReport) -> str:
+def format_run_report(report: RunReport, *, include_titles: bool = True) -> str:
     finished = report.finished_at or datetime.now()
     duration = ""
     if report.finished_at:
@@ -72,12 +74,25 @@ def format_run_report(report: RunReport) -> str:
         f"无文字稿文章数：{report.missing_transcript_count}",
         f"摘要失败数：{report.summary_failed_count}",
     ]
-    if report.added_by_column:
+    has_item_details = bool(report.added_by_column or report.missing_by_column or report.summary_failed_by_column or report.failures)
+    if not include_titles and has_item_details:
+        lines.extend(["", "明细：已按配置隐藏标题；请在本机用 list --runs / list --failed 查看。"])
+    if include_titles and report.added_by_column:
         lines.extend(["", "新增内容："])
         for column, titles in report.added_by_column.items():
             for title in titles[:10]:
-                lines.append(f"- {column}：{title}")
-    if report.failures:
+                lines.append(f"- {column}：{redact(title)}")
+    if include_titles and report.missing_by_column:
+        lines.extend(["", "无文字稿/待处理："])
+        for column, titles in report.missing_by_column.items():
+            for title in titles[:10]:
+                lines.append(f"- {column}：{redact(title)}")
+    if include_titles and report.summary_failed_by_column:
+        lines.extend(["", "摘要失败："])
+        for column, titles in report.summary_failed_by_column.items():
+            for title in titles[:10]:
+                lines.append(f"- {column}：{redact(title)}")
+    if include_titles and report.failures:
         lines.extend(["", "失败："])
         for failure in report.failures[:10]:
             lines.append(f"- {redact(failure)}")
@@ -87,16 +102,17 @@ def format_run_report(report: RunReport) -> str:
 
 
 class FeishuNotifier:
-    def __init__(self, credentials: FeishuCredentials | None, *, timeout_seconds: int = 10):
+    def __init__(self, credentials: FeishuCredentials | None, *, timeout_seconds: int = 10, include_titles: bool = True):
         self.credentials = credentials
         self.timeout_seconds = timeout_seconds
+        self.include_titles = include_titles
 
     def build_payload(self, report: RunReport) -> dict[str, Any] | None:
         if self.credentials is None:
             return None
         payload: dict[str, Any] = {
             "msg_type": "text",
-            "content": {"text": format_run_report(report)},
+            "content": {"text": format_run_report(report, include_titles=self.include_titles)},
         }
         if self.credentials.secret:
             timestamp = int(time.time())

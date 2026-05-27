@@ -22,12 +22,31 @@ UI_NOISE_PATTERNS = (
 
 CONTAINER_TAGS = {"article", "main", "section"}
 
+TITLE_META_KEYS = {"og:title", "twitter:title", "title", "headline"}
+AUTHOR_META_KEYS = {"author", "article:author", "og:article:author"}
+PUBLISHED_META_KEYS = {
+    "article:published_time",
+    "article:modified_time",
+    "date",
+    "datepublished",
+    "publishdate",
+    "pubdate",
+    "publish_time",
+    "published_time",
+}
+
 
 def _clean_visible_text(text: str) -> str:
     text = re.sub(r"[ \t\r\f\v]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _clean_title(title: str) -> str:
+    title = re.sub(r"\s+", " ", title).strip()
+    title = re.split(r"\s*[-_|]\s*得到(?:App|网页版)?", title, maxsplit=1)[0].strip()
+    return title
 
 
 class VisibleTextParser(HTMLParser):
@@ -106,6 +125,80 @@ class TextBlockParser(HTMLParser):
             parts.append(text)
 
 
+class MetadataParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.title: str | None = None
+        self.author: str | None = None
+        self.published_at: str | None = None
+        self._capture: str | None = None
+        self._title_parts: list[str] = []
+        self._h1_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs):
+        attrs_dict = {str(key).lower(): str(value) for key, value in attrs if value is not None}
+        if tag == "meta":
+            key = (
+                attrs_dict.get("property")
+                or attrs_dict.get("name")
+                or attrs_dict.get("itemprop")
+                or ""
+            ).lower()
+            content = attrs_dict.get("content", "").strip()
+            if not content:
+                return
+            compact_key = key.replace("_", "").replace("-", "")
+            if not self.title and key in TITLE_META_KEYS:
+                self.title = _clean_title(content)
+            elif not self.author and key in AUTHOR_META_KEYS:
+                self.author = content
+            elif not self.published_at and (key in PUBLISHED_META_KEYS or compact_key in PUBLISHED_META_KEYS):
+                self.published_at = content
+            return
+        if tag == "time" and not self.published_at:
+            timestamp = attrs_dict.get("datetime") or attrs_dict.get("content")
+            if timestamp:
+                self.published_at = timestamp.strip()
+        if tag in {"title", "h1"}:
+            self._capture = tag
+
+    def handle_endtag(self, tag: str):
+        if tag == "title" and self._capture == "title":
+            if not self.title:
+                self.title = _clean_title(" ".join(self._title_parts))
+            self._capture = None
+        elif tag == "h1" and self._capture == "h1":
+            if not self.title:
+                self.title = _clean_title(" ".join(self._h1_parts))
+            self._capture = None
+
+    def handle_data(self, data: str):
+        text = data.strip()
+        if not text:
+            return
+        if self._capture == "title":
+            self._title_parts.append(text)
+        elif self._capture == "h1":
+            self._h1_parts.append(text)
+
+
+@dataclass(frozen=True)
+class ExtractedMetadata:
+    title: str | None = None
+    author: str | None = None
+    published_at: str | None = None
+
+
+def extract_metadata(html: str) -> ExtractedMetadata:
+    parser = MetadataParser()
+    parser.feed(html)
+    return ExtractedMetadata(
+        title=parser.title or None,
+        author=parser.author or None,
+        published_at=parser.published_at or None,
+    )
+
+
 def html_to_candidate_texts(html: str) -> list[str]:
     parser = TextBlockParser()
     parser.feed(html)
@@ -157,6 +250,7 @@ class TranscriptExtractor:
         self.max_noise_ratio = max_noise_ratio
 
     def from_html(self, item: ContentItem, html: str) -> ContentDetail:
+        item = self._merge_metadata(item, extract_metadata(html))
         text, quality = self.select_best_candidate(item, html_to_candidate_texts(html))
         return ContentDetail(
             item=item,
@@ -164,6 +258,19 @@ class TranscriptExtractor:
             has_transcript=quality.ok,
             raw_html_hash=hashlib.sha256(html.encode("utf-8")).hexdigest(),
             quality_reason=quality.reason,
+        )
+
+    @staticmethod
+    def _merge_metadata(item: ContentItem, metadata: ExtractedMetadata) -> ContentItem:
+        return ContentItem(
+            source_url=item.source_url,
+            detail_url=item.detail_url,
+            dedao_id=item.dedao_id,
+            column_name=item.column_name,
+            title=metadata.title or item.title,
+            published_at=metadata.published_at or item.published_at,
+            author=metadata.author or item.author,
+            content_type=item.content_type,
         )
 
     def from_text(self, item: ContentItem, text: str) -> ContentDetail:

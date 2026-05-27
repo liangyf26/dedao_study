@@ -13,6 +13,7 @@ from dedao_sync.models import (
     ContentItem,
     SummaryResult,
     STATUS_MISSING_TRANSCRIPT,
+    STATUS_EXTRACTOR_FAILED,
     STATUS_LOCKED,
     STATUS_SUMMARY_FAILED,
     STATUS_SYNCED,
@@ -21,6 +22,9 @@ from dedao_sync.models import (
 from dedao_sync.repository import SyncRepository
 from dedao_sync.summarizer import SummaryError
 from dedao_sync.sync import default_db_path, default_lock_path, run_preflight, run_resummarize, run_retry_failed, run_sync
+
+
+VALID_AUTH_STATE = '{"cookies":[{"name":"sid","value":"test","domain":".dedao.cn","path":"/"}],"origins":[]}'
 
 
 def write_config(root: Path) -> Path:
@@ -81,7 +85,7 @@ class SyncTests(unittest.TestCase):
             config_path = write_config(root)
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
             item = ContentItem(
                 source_url="https://example.com/item/1",
                 detail_url="https://example.com/item/1",
@@ -105,13 +109,53 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(len(list((root / "vault" / "得到" / "栏目").glob("*.md"))), 1)
             logging.shutdown()
 
+    def test_sync_records_detail_metadata_from_extractor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+            list_item = ContentItem(
+                source_url="https://example.com/item/meta",
+                detail_url="https://example.com/item/meta",
+                dedao_id="meta",
+                column_name="栏目",
+                title="列表页标题",
+            )
+            detail_item = ContentItem(
+                source_url=list_item.source_url,
+                detail_url=list_item.detail_url,
+                dedao_id=list_item.dedao_id,
+                column_name=list_item.column_name,
+                title="健康参考 真实标题",
+                published_at="2026-05-27T08:00:00+08:00",
+                author="尹烨",
+                content_type=list_item.content_type,
+            )
+            crawler = DetailMetadataCrawler(list_item, detail_item)
+
+            report, _ = run_sync(config_path, crawler=crawler, summary_service=FakeSummary(), notifier=FakeNotifier())
+
+            self.assertEqual(report.status, "success")
+            self.assertEqual(report.added_by_column["栏目"], ["健康参考 真实标题"])
+            note = next((root / "vault" / "得到" / "栏目").glob("*.md"))
+            body = note.read_text(encoding="utf-8")
+            self.assertIn('title: "健康参考 真实标题"', body)
+            self.assertIn('author: "尹烨"', body)
+            self.assertIn('published: "2026-05-27T08:00:00+08:00"', body)
+            rows = SyncRepository(default_db_path(root)).list_items()
+            self.assertEqual(rows[0]["title"], "健康参考 真实标题")
+            self.assertEqual(rows[0]["published_at"], "2026-05-27T08:00:00+08:00")
+            logging.shutdown()
+
     def test_sync_skips_duplicate_content_hash_before_writing_second_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config_path = write_config(root)
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
             first = ContentItem("https://example.com/a", "栏目", "健康参考 A", "https://example.com/a", dedao_id="a")
             second = ContentItem("https://example.com/b", "栏目", "健康参考 B", "https://example.com/b", dedao_id="b")
             transcript = "健康参考 A B\n\n第一段内容很长，足够形成正文。\n\n第二段继续展开。\n\n第三段给出边界。"
@@ -131,7 +175,7 @@ class SyncTests(unittest.TestCase):
             config_path = write_config(root)
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
             item = ContentItem("https://example.com/dry", "栏目", "健康参考 Dry", "https://example.com/dry", dedao_id="dry")
             crawler = FakeCrawler([item], {"dry": "健康参考 Dry\n\n第一段内容很长。\n\n第二段继续展开。\n\n第三段补充。"})
             report, _ = run_sync(config_path, dry_run=True, crawler=crawler, summary_service=FakeSummary(), notifier=FakeNotifier())
@@ -142,13 +186,54 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(report2.success_count, 1)
             logging.shutdown()
 
+    def test_run_sync_can_skip_notification_for_manual_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+            item = ContentItem("https://example.com/check", "栏目", "健康参考 Check", "https://example.com/check", dedao_id="check")
+            crawler = FakeCrawler([item], {"check": "健康参考 Check\n\n第一段内容很长。\n\n第二段继续展开。\n\n第三段补充。"})
+            notifier = FakeNotifier()
+
+            report, _ = run_sync(
+                config_path,
+                dry_run=True,
+                crawler=crawler,
+                summary_service=FakeSummary(),
+                notifier=notifier,
+                send_notification=False,
+            )
+
+            self.assertEqual(report.new_count, 1)
+            self.assertEqual(notifier.reports, [])
+            logging.shutdown()
+
+    def test_run_sync_sends_notification_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+            item = ContentItem("https://example.com/notify", "栏目", "健康参考 Notify", "https://example.com/notify", dedao_id="notify")
+            crawler = FakeCrawler([item], {"notify": "健康参考 Notify\n\n第一段内容很长。\n\n第二段继续展开。\n\n第三段补充。"})
+            notifier = FakeNotifier()
+
+            report, _ = run_sync(config_path, crawler=crawler, summary_service=FakeSummary(), notifier=notifier)
+
+            self.assertEqual(report.status, "success")
+            self.assertEqual(len(notifier.reports), 1)
+            logging.shutdown()
+
     def test_empty_untrusted_crawl_result_is_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config_path = write_config(root)
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
             report, _ = run_sync(config_path, crawler=FakeCrawler([], {}), summary_service=FakeSummary(), notifier=FakeNotifier())
             self.assertEqual(report.status, "partial_failed")
             self.assertEqual(report.failed_count, 1)
@@ -161,7 +246,7 @@ class SyncTests(unittest.TestCase):
             config_path = write_config(root)
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
 
             report, _ = run_sync(
                 config_path,
@@ -182,7 +267,7 @@ class SyncTests(unittest.TestCase):
             config_path = write_config(root)
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
             item = ContentItem("https://example.com/m", "栏目", "健康参考 M", "https://example.com/m", dedao_id="m")
             crawler = MissingTranscriptCrawler(item)
 
@@ -190,8 +275,34 @@ class SyncTests(unittest.TestCase):
 
             self.assertEqual(report.status, "partial_failed")
             self.assertEqual(report.missing_transcript_count, 1)
+            self.assertEqual(report.missing_by_column["栏目"], ["健康参考 M"])
             rows = SyncRepository(default_db_path(root)).list_items()
             self.assertEqual(rows[0]["status"], STATUS_MISSING_TRANSCRIPT)
+            logging.shutdown()
+
+    def test_extractor_failure_records_diagnostic_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+            item = ContentItem("https://example.com/e", "栏目", "健康参考 E", "https://example.com/e", dedao_id="e")
+            diagnostic_path = root / "data" / "page_failures" / "failed.html"
+            crawler = ExtractorFailureCrawler(item, diagnostic_path)
+
+            report, run_id = run_sync(config_path, crawler=crawler, summary_service=FakeSummary(), notifier=FakeNotifier())
+
+            self.assertEqual(report.status, "partial_failed")
+            self.assertEqual(report.missing_transcript_count, 1)
+            self.assertIn("健康参考 E（too_short", report.missing_by_column["栏目"][0])
+            repo = SyncRepository(default_db_path(root))
+            rows = repo.list_items()
+            self.assertEqual(rows[0]["status"], STATUS_EXTRACTOR_FAILED)
+            self.assertIn("too_short", rows[0]["error_message"])
+            self.assertIn(str(diagnostic_path), rows[0]["error_message"])
+            run_items = repo.list_run_items(run_id)
+            self.assertIn(str(diagnostic_path), run_items[0]["message"])
             logging.shutdown()
 
     def test_summary_failure_preserves_note_and_marks_run_partial_failed(self):
@@ -200,7 +311,7 @@ class SyncTests(unittest.TestCase):
             config_path = write_config(root)
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
             item = ContentItem("https://example.com/sf", "栏目", "健康参考 SF", "https://example.com/sf", dedao_id="sf")
             crawler = FakeCrawler([item], {"sf": "健康参考 SF\n\n第一段内容很长。\n\n第二段继续展开。\n\n第三段补充。"})
 
@@ -209,12 +320,15 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(report.status, "partial_failed")
             self.assertEqual(report.success_count, 1)
             self.assertEqual(report.summary_failed_count, 1)
+            self.assertIn("健康参考 SF", report.summary_failed_by_column["栏目"][0])
             notes = list((root / "vault" / "得到" / "栏目").glob("*.md"))
             self.assertEqual(len(notes), 1)
             self.assertIn("## 全文稿", notes[0].read_text(encoding="utf-8"))
             rows = SyncRepository(default_db_path(root)).list_items()
             self.assertEqual(rows[0]["status"], STATUS_SUMMARY_FAILED)
             self.assertEqual(rows[0]["summary_status"], STATUS_SUMMARY_FAILED)
+            self.assertEqual(rows[0]["has_transcript"], 1)
+            self.assertIsNotNone(rows[0]["synced_at"])
             logging.shutdown()
 
     def test_sync_reports_locked_when_another_run_is_active(self):
@@ -237,7 +351,7 @@ class SyncTests(unittest.TestCase):
             config_path = write_config(root)
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
             repo = SyncRepository(default_db_path(root))
             repo.migrate()
             item = ContentItem("https://example.com/f", "栏目", "健康参考 F", "https://example.com/f", dedao_id="f")
@@ -255,7 +369,7 @@ class SyncTests(unittest.TestCase):
             config_path = write_config(root)
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
-            auth.write_text("{}", encoding="utf-8")
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
             repo = SyncRepository(default_db_path(root))
             repo.migrate()
             item = ContentItem("https://example.com/t", "栏目", "健康参考 T", "https://example.com/t", dedao_id="t")
@@ -267,6 +381,50 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(report.discovered_count, 1)
             self.assertEqual(report.success_count, 1)
             self.assertEqual(SyncRepository(default_db_path(root)).list_items()[0]["status"], STATUS_SYNCED)
+            logging.shutdown()
+
+    def test_retry_failed_resummarizes_existing_note_without_duplicate_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+            repo = SyncRepository(default_db_path(root))
+            repo.migrate()
+            note_dir = root / "vault" / "得到" / "栏目"
+            note_dir.mkdir(parents=True)
+            note = note_dir / "栏目-2026-05-27-健康参考.md"
+            note.write_text(
+                "# 健康参考\n\n## 原子卡片\n\n> 摘要尚未生成。\n\n## 全文稿\n\n健康参考\n\n第一段内容很长。\n\n第二段继续展开。\n\n第三段补充。",
+                encoding="utf-8",
+            )
+            item = ContentItem("https://example.com/rs", "栏目", "健康参考", "https://example.com/rs", dedao_id="rs")
+            repo.upsert_item(
+                item,
+                status=STATUS_SUMMARY_FAILED,
+                content_hash="hash-rs",
+                file_path=note,
+                has_transcript=True,
+                summary_status=STATUS_SUMMARY_FAILED,
+            )
+
+            report, run_id = run_retry_failed(
+                config_path,
+                crawler=NoFetchCrawler(),
+                summary_service=FakeSummary(),
+                notifier=FakeNotifier(),
+            )
+
+            self.assertEqual(report.status, "success")
+            self.assertEqual(report.success_count, 1)
+            self.assertEqual(len(list(note_dir.glob("*.md"))), 1)
+            self.assertIn("卡片", note.read_text(encoding="utf-8"))
+            rows = SyncRepository(default_db_path(root)).list_items()
+            self.assertEqual(rows[0]["status"], STATUS_SYNCED)
+            self.assertEqual(rows[0]["file_path"], str(note))
+            run_items = repo.list_run_items(run_id)
+            self.assertEqual(run_items[0]["action"], "retry-summary")
             logging.shutdown()
 
     def test_resummarize_overwrites_existing_note(self):
@@ -327,6 +485,61 @@ class MissingTranscriptCrawler:
 
     def fetch_detail(self, item: ContentItem) -> ContentDetail:
         return ContentDetail(item=item, transcript_text="", has_transcript=False, raw_html_hash="html-missing")
+
+
+class ExtractorFailureCrawler:
+    def __init__(self, item: ContentItem, diagnostic_path: Path):
+        self.item = item
+        self.diagnostic_path = diagnostic_path
+
+    def check_login(self) -> bool:
+        return True
+
+    def list_items(self, column):
+        return CrawlResult(items=[self.item])
+
+    def fetch_detail(self, item: ContentItem) -> ContentDetail:
+        return ContentDetail(
+            item=item,
+            transcript_text="",
+            has_transcript=False,
+            raw_html_hash="html-extractor-failed",
+            quality_reason="too_short",
+            diagnostic_path=self.diagnostic_path,
+        )
+
+
+class DetailMetadataCrawler:
+    def __init__(self, list_item: ContentItem, detail_item: ContentItem):
+        self.list_item = list_item
+        self.detail_item = detail_item
+
+    def check_login(self) -> bool:
+        return True
+
+    def list_items(self, column):
+        return CrawlResult(items=[self.list_item])
+
+    def fetch_detail(self, item: ContentItem) -> ContentDetail:
+        return ContentDetail(
+            item=self.detail_item,
+            transcript_text=(
+                "健康参考 真实标题\n\n"
+                "第一段内容很长，足够形成正文，并且包含详情页真实标题。\n\n"
+                "第二段继续展开，用于验证同步流程会采用 extractor 合并后的元数据。\n\n"
+                "第三段给出边界，确保正文可以被正常写入 Obsidian。"
+            ),
+            has_transcript=True,
+            raw_html_hash="html-meta",
+        )
+
+
+class NoFetchCrawler:
+    def check_login(self) -> bool:
+        return True
+
+    def fetch_detail(self, item: ContentItem) -> ContentDetail:
+        raise AssertionError("fetch_detail should not be called for saved summary_failed notes")
 
 
 class FakeSummary:

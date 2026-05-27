@@ -8,6 +8,7 @@ from pathlib import Path
 from string import Formatter
 from urllib.parse import urlparse
 
+from .browser import validate_storage_state_file
 from .models import AppConfig
 
 
@@ -96,9 +97,13 @@ class PreflightChecker:
         self.config.root_dir.joinpath("data").mkdir(exist_ok=True)
         self.config.root_dir.joinpath("logs").mkdir(exist_ok=True)
         self.config.dedao.auth_state_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.config.dedao.save_failure_html:
+            self._check_failure_snapshot_dir(result)
 
-        if self.require_auth and not self.config.dedao.auth_state_path.exists():
-            result.add_error(f"Dedao auth state not found, run login first: {self.config.dedao.auth_state_path}")
+        if self.require_auth:
+            ok, message = validate_storage_state_file(self.config.dedao.auth_state_path)
+            if not ok:
+                result.add_error(f"Dedao auth state invalid, run login first: {message}")
 
         if self.require_browser and importlib.util.find_spec("playwright") is None:
             result.add_error("Playwright is not installed, run: pip install -e .[dev] && playwright install chromium")
@@ -137,3 +142,13 @@ class PreflightChecker:
         finally:
             if temp_path:
                 temp_path.unlink(missing_ok=True)
+
+    def _check_failure_snapshot_dir(self, result: PreflightResult) -> None:
+        snapshot_dir = self.config.dedao.failure_snapshot_dir
+        try:
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            result.add_error(f"Failure HTML snapshot directory is not writable: {snapshot_dir} ({exc})")
+            return
+        if not snapshot_dir.is_dir():
+            result.add_error(f"Failure HTML snapshot path is not a directory: {snapshot_dir}")
