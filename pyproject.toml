@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dedao-sync"
+version = "0.1.0"
+description = "Sync personal Dedao transcripts into an Obsidian vault."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "playwright>=1.44",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.5",
+]
+transcription = [
+  "faster-whisper>=1.0",
+]
+
+[project.scripts]
+dedao-sync = "dedao_sync.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["dedao_sync*"]

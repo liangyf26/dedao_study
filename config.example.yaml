@@ -1,0 +1,42 @@
+obsidian:
+  vault_path: "D:\\biji\\openclaw-vault\\5-收件箱(Inbox)"
+  output_dir: "得到"
+  filename_pattern: "{column}-{published_date}-{title}.md"
+
+dedao:
+  auth_state_path: "data/auth/dedao_state.json"
+  browser_profile_dir: "data/browser_profile"
+  headless: false
+  request_interval_seconds: 2
+  columns:
+    - name: "快刀青衣·快刀广播站"
+      url: "https://aiquan.dedao.cn/courseList?type=1"
+      enabled: true
+    - name: "尹烨·健康参考"
+      url: "https://www.dedao.cn/course/detail?id=zp9lB3q0breKZq4sDWXYjyWxG64dg2"
+      enabled: true
+    - name: "马江博·政经参考"
+      url: "https://www.dedao.cn/course/detail?id=ZWyMAOLnR4xJ1vqse8X65QaE8YG29k"
+      enabled: true
+    - name: "脱不花·长谈"
+      url: "https://www.dedao.cn/course/detail?id=ElLD8OrepAxVvGMs4kJ2oybGdmBnvM"
+      enabled: true
+
+summary:
+  enabled: true
+  provider: "opencode_go"
+  model: "deepseek-v4-pro"
+  base_url_env: "OPENCODE_GO_BASE_URL"
+  api_key_env: "OPENCODE_GO_API_KEY"
+
+transcription:
+  enabled: false
+  provider: "faster_whisper"
+  delete_media_after_transcription: true
+  temp_dir: "data/media_cache"
+
+feishu:
+  enabled: true
+  webhook_url_env: "FEISHU_WEBHOOK_URL"
+  secret_env: "FEISHU_WEBHOOK_SECRET"
+
