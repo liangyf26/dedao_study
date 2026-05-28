@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import time
 from dataclasses import dataclass, replace
-from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 from .extractor import TranscriptExtractor
 from .models import AppConfig, ColumnConfig, ContentDetail, ContentItem
+from .time_utils import now_local
 
 
 class CrawlerError(RuntimeError):
@@ -66,7 +67,7 @@ class DedaoCrawler:
             try:
                 page = context.new_page()
                 page.goto(column.url, wait_until="domcontentloaded", timeout=45000)
-                page.wait_for_timeout(int(self.config.dedao.request_interval_seconds * 1000))
+                page.wait_for_timeout(self._request_delay_ms())
                 anchors = self._page_anchors(page)
                 items = self.items_from_anchors(column, anchors)
                 return CrawlResult(items=items, empty_but_valid=False)
@@ -80,7 +81,7 @@ class DedaoCrawler:
             try:
                 page = context.new_page()
                 page.goto(item.detail_url, wait_until="domcontentloaded", timeout=45000)
-                page.wait_for_timeout(int(self.config.dedao.request_interval_seconds * 1000))
+                page.wait_for_timeout(self._request_delay_ms())
                 title = page.title() or item.title
                 html = page.content()
                 if title and title != item.title:
@@ -101,7 +102,7 @@ class DedaoCrawler:
                 return detail
             finally:
                 browser.close()
-                time.sleep(self.config.dedao.request_interval_seconds)
+                time.sleep(self._request_delay_seconds())
 
     def _save_failure_html(self, item: ContentItem, html: str, raw_html_hash: str | None) -> Path:
         output_dir = self.config.dedao.failure_snapshot_dir
@@ -110,7 +111,7 @@ class DedaoCrawler:
         slug_source = "_".join(part for part in (parsed.netloc, parsed.path.strip("/"), item.dedao_id or item.title) if part)
         slug = re.sub(r"[^A-Za-z0-9._-]+", "_", slug_source).strip("_") or "detail"
         digest = (raw_html_hash or "").strip()[:12] or "nohash"
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        stamp = now_local().strftime("%Y%m%d-%H%M%S")
         target = output_dir / f"{stamp}-{slug[:80]}-{digest}.html"
         target.write_text(html, encoding="utf-8")
         return target
@@ -124,7 +125,7 @@ class DedaoCrawler:
             try:
                 page = context.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                page.wait_for_timeout(int(self.config.dedao.request_interval_seconds * 1000))
+                page.wait_for_timeout(self._request_delay_ms())
                 slug = re.sub(r"[^A-Za-z0-9._-]+", "_", urlparse(url).netloc + urlparse(url).path).strip("_")
                 if not slug:
                     slug = "page"
@@ -141,13 +142,29 @@ class DedaoCrawler:
             finally:
                 browser.close()
 
+    def _request_delay_seconds(self) -> float:
+        return self.jittered_delay_seconds(self.config.dedao.request_interval_seconds)
+
+    def _request_delay_ms(self) -> int:
+        return int(self._request_delay_seconds() * 1000)
+
+    @staticmethod
+    def jittered_delay_seconds(base_seconds: float) -> float:
+        if base_seconds <= 0:
+            return 0
+        return base_seconds + random.uniform(0, max(0.5, base_seconds * 0.25))
+
     @staticmethod
     def _page_anchors(page) -> list[dict[str, object]]:
         return page.eval_on_selector_all(
             "a",
             """els => els.map(a => ({
                 href: a.href,
-                text: (a.innerText || a.textContent || '').trim()
+                text: (a.innerText || a.textContent || '').trim(),
+                title: (a.getAttribute('title') || '').trim(),
+                aria_label: (a.getAttribute('aria-label') || '').trim(),
+                data_title: (a.getAttribute('data-title') || a.dataset?.title || '').trim(),
+                card_text: ((a.closest('article, li, [class*=card], [class*=item], [class*=course]') || a).innerText || '').trim()
             }))""",
         )
 
@@ -158,7 +175,7 @@ class DedaoCrawler:
         column_url = cls._normalize_url(column.url, column.url)
         for anchor in anchors:
             href = str(anchor.get("href") or "")
-            title = re.sub(r"\s+", " ", str(anchor.get("text") or "")).strip()
+            title = cls._anchor_title(anchor)
             if not href or not title or len(title) < 4:
                 continue
             if not cls._looks_like_detail_url(href):
@@ -180,6 +197,17 @@ class DedaoCrawler:
                 )
             )
         return items
+
+    @staticmethod
+    def _anchor_title(anchor: dict[str, object]) -> str:
+        fallback = ""
+        for key in ("text", "title", "aria_label", "data_title", "card_text"):
+            title = re.sub(r"\s+", " ", str(anchor.get(key) or "")).strip()
+            if len(title) >= 4:
+                return title[:120]
+            if title and not fallback:
+                fallback = title
+        return fallback[:120]
 
     @staticmethod
     def _looks_like_detail_url(url: str) -> bool:

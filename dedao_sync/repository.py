@@ -8,6 +8,7 @@ from typing import Any, Iterator
 
 from .models import ContentItem, RunReport
 from .security import redact
+from .time_utils import now_local
 
 
 def utc_now_iso() -> str:
@@ -16,6 +17,51 @@ def utc_now_iso() -> str:
 
 def should_mark_synced_at(*, status: str, has_transcript: bool, file_path: str | Path | None) -> bool:
     return status == "synced" or (has_transcript and file_path is not None)
+
+
+ITEM_COLUMNS = {
+    "source_url": "TEXT NOT NULL DEFAULT ''",
+    "dedao_id": "TEXT",
+    "canonical_url": "TEXT",
+    "column_name": "TEXT NOT NULL DEFAULT ''",
+    "title": "TEXT NOT NULL DEFAULT ''",
+    "published_at": "TEXT",
+    "synced_at": "TEXT",
+    "content_hash": "TEXT",
+    "status": "TEXT NOT NULL DEFAULT 'discovered'",
+    "file_path": "TEXT",
+    "has_transcript": "INTEGER NOT NULL DEFAULT 0",
+    "transcribed": "INTEGER NOT NULL DEFAULT 0",
+    "summary_status": "TEXT",
+    "error_message": "TEXT",
+    "created_at": "TEXT NOT NULL DEFAULT ''",
+    "updated_at": "TEXT NOT NULL DEFAULT ''",
+}
+
+RUN_COLUMNS = {
+    "started_at": "TEXT NOT NULL DEFAULT ''",
+    "finished_at": "TEXT",
+    "status": "TEXT NOT NULL DEFAULT 'running'",
+    "total_columns": "INTEGER NOT NULL DEFAULT 0",
+    "discovered_count": "INTEGER NOT NULL DEFAULT 0",
+    "new_count": "INTEGER NOT NULL DEFAULT 0",
+    "skipped_count": "INTEGER NOT NULL DEFAULT 0",
+    "success_count": "INTEGER NOT NULL DEFAULT 0",
+    "request_count": "INTEGER NOT NULL DEFAULT 0",
+    "failed_count": "INTEGER NOT NULL DEFAULT 0",
+    "missing_transcript_count": "INTEGER NOT NULL DEFAULT 0",
+    "summary_failed_count": "INTEGER NOT NULL DEFAULT 0",
+    "log_path": "TEXT",
+    "error_message": "TEXT",
+}
+
+RUN_ITEM_COLUMNS = {
+    "run_id": "INTEGER NOT NULL DEFAULT 0",
+    "item_id": "INTEGER NOT NULL DEFAULT 0",
+    "action": "TEXT NOT NULL DEFAULT ''",
+    "status": "TEXT NOT NULL DEFAULT ''",
+    "message": "TEXT",
+}
 
 
 class SyncRepository:
@@ -79,6 +125,7 @@ class SyncRepository:
                   new_count INTEGER NOT NULL DEFAULT 0,
                   skipped_count INTEGER NOT NULL DEFAULT 0,
                   success_count INTEGER NOT NULL DEFAULT 0,
+                  request_count INTEGER NOT NULL DEFAULT 0,
                   failed_count INTEGER NOT NULL DEFAULT 0,
                   missing_transcript_count INTEGER NOT NULL DEFAULT 0,
                   summary_failed_count INTEGER NOT NULL DEFAULT 0,
@@ -96,6 +143,21 @@ class SyncRepository:
                 );
                 """
             )
+            self._ensure_columns(conn, "items", ITEM_COLUMNS)
+            self._ensure_columns(conn, "runs", RUN_COLUMNS)
+            self._ensure_columns(conn, "run_items", RUN_ITEM_COLUMNS)
+            now = utc_now_iso()
+            conn.execute("UPDATE items SET canonical_url = source_url WHERE canonical_url IS NULL")
+            conn.execute("UPDATE items SET created_at = ? WHERE created_at IS NULL OR created_at = ''", (now,))
+            conn.execute("UPDATE items SET updated_at = ? WHERE updated_at IS NULL OR updated_at = ''", (now,))
+            conn.execute("UPDATE runs SET started_at = ? WHERE started_at IS NULL OR started_at = ''", (now,))
+
+    @staticmethod
+    def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        for name, definition in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
     def start_run(self, report: RunReport) -> int:
         with self.connect() as conn:
@@ -121,18 +183,19 @@ class SyncRepository:
                 """
                 UPDATE runs
                 SET finished_at = ?, status = ?, discovered_count = ?, new_count = ?,
-                    skipped_count = ?, success_count = ?, failed_count = ?,
+                    skipped_count = ?, success_count = ?, request_count = ?, failed_count = ?,
                     missing_transcript_count = ?, summary_failed_count = ?,
                     error_message = ?
                 WHERE id = ?
                 """,
                 (
-                    (report.finished_at or datetime.now()).isoformat(timespec="seconds"),
+                    (report.finished_at or now_local()).isoformat(timespec="seconds"),
                     report.status,
                     report.discovered_count,
                     report.new_count,
                     report.skipped_count,
                     report.success_count,
+                    report.request_count,
                     report.failed_count,
                     report.missing_transcript_count,
                     report.summary_failed_count,
@@ -263,14 +326,15 @@ class SyncRepository:
             ).fetchall()
             return [dict(row) for row in rows]
 
-    def list_items_needing_summary(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_items_needing_summary(self, limit: int = 50, *, include_synced: bool = False) -> list[dict[str, Any]]:
+        summary_filter = "" if include_synced else "AND (summary_status IS NULL OR summary_status = 'summary_failed')"
         with self.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM items
                 WHERE has_transcript = 1
                   AND file_path IS NOT NULL
-                  AND (summary_status IS NULL OR summary_status = 'summary_failed')
+                  {summary_filter}
                 ORDER BY updated_at ASC
                 LIMIT ?
                 """,

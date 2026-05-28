@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .models import AppConfig, ContentDetail, SummaryResult
+from .time_utils import now_local
 
 
 WINDOWS_RESERVED_NAMES = {
@@ -24,6 +25,11 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def note_identity_hash(markdown: str) -> str:
+    normalized = re.sub(r'(?m)^sync_time: ".*"$', 'sync_time: "<ignored>"', markdown)
+    return content_hash(normalized)
+
+
 def sanitize_filename_part(value: str, *, max_length: int = 80) -> str:
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", value)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
@@ -38,7 +44,24 @@ def sanitize_filename_part(value: str, *, max_length: int = 80) -> str:
 
 def yaml_scalar(value: object) -> str:
     text = "" if value is None else str(value)
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    replacements = {
+        "\\": "\\\\",
+        '"': '\\"',
+        "\b": "\\b",
+        "\f": "\\f",
+        "\n": "\\n",
+        "\r": "\\r",
+        "\t": "\\t",
+    }
+    escaped_parts: list[str] = []
+    for char in text:
+        if char in replacements:
+            escaped_parts.append(replacements[char])
+        elif ord(char) < 0x20:
+            escaped_parts.append(f"\\x{ord(char):02x}")
+        else:
+            escaped_parts.append(char)
+    escaped = "".join(escaped_parts)
     return f'"{escaped}"'
 
 
@@ -53,9 +76,23 @@ def render_frontmatter(fields: dict[str, object], tags: list[str]) -> str:
     return "\n".join(lines)
 
 
+def markdown_single_line(value: object) -> str:
+    text = "" if value is None else str(value)
+    text = re.sub(r"[\x00-\x1f]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def render_list_items(values: tuple[str, ...]) -> str:
+    lines = [markdown_single_line(value) for value in values]
+    lines = [line for line in lines if line]
+    return "\n".join(f"- {line}" for line in lines) or "- "
+
+
 def render_note(detail: ContentDetail, summary: SummaryResult, *, sync_time: datetime | None = None) -> str:
     item = detail.item
-    sync_time = sync_time or datetime.now()
+    sync_time = sync_time or now_local()
+    source_url = item.detail_url or item.source_url
+    title = markdown_single_line(item.title) or "untitled"
     frontmatter = render_frontmatter(
         {
             "source": "dedao",
@@ -63,7 +100,7 @@ def render_note(detail: ContentDetail, summary: SummaryResult, *, sync_time: dat
             "title": item.title,
             "author": item.author or "",
             "published": item.published_at or "",
-            "url": item.detail_url or item.source_url,
+            "url": source_url,
             "content_type": "transcript" if detail.has_transcript else "missing_transcript",
             "summary_style": "zettelkasten",
             "sync_time": sync_time.isoformat(timespec="seconds"),
@@ -82,10 +119,13 @@ def render_note(detail: ContentDetail, summary: SummaryResult, *, sync_time: dat
         card_lines.append("> 摘要尚未生成。")
         card_lines.append("")
 
-    links = "\n".join(f"- {line}" for line in summary.links) or "- "
-    actions = "\n".join(f"- {line}" for line in summary.actions) or "- "
-    questions = "\n".join(f"- {line}" for line in summary.questions) or "- "
-    keywords = "，".join(summary.keywords)
+    related_items = tuple(summary.links) + tuple(f"可延伸问题：{question}" for question in summary.questions)
+    links = render_list_items(related_items)
+    actions = render_list_items(summary.actions)
+    questions = render_list_items(summary.questions)
+    keywords = "，".join(markdown_single_line(keyword) for keyword in summary.keywords if markdown_single_line(keyword))
+    source_line = markdown_single_line(source_url)
+    source = f"- <{source_line}>" if source_line else "- "
 
     transcript = detail.transcript_text.strip()
     if not detail.has_transcript:
@@ -95,7 +135,7 @@ def render_note(detail: ContentDetail, summary: SummaryResult, *, sync_time: dat
         [
             frontmatter,
             "",
-            f"# {item.title}",
+            f"# {title}",
             "",
             "## 原子卡片",
             "",
@@ -120,6 +160,10 @@ def render_note(detail: ContentDetail, summary: SummaryResult, *, sync_time: dat
             "## 关键词",
             "",
             keywords,
+            "",
+            "## 来源",
+            "",
+            source,
             "",
             "## 全文稿",
             "",
@@ -148,12 +192,13 @@ class MarkdownWriter:
         column_dir = self.config.output_root / sanitize_filename_part(item.column_name)
         target = column_dir / filename
         if target.exists():
-            digest = content_hash(body)[:8]
-            target = column_dir / f"{target.stem}-{digest}.md"
+            target = self._collision_safe_path(target, body)
         if len(str(target)) > 240:
             digest = content_hash(body)[:8]
             short_title = sanitize_filename_part(item.title, max_length=40)
             target = column_dir / f"{values['column']}-{values['published_date']}-{short_title}-{digest}.md"
+            if target.exists():
+                target = self._collision_safe_path(target, body)
         return target
 
     def write(self, detail: ContentDetail, summary: SummaryResult) -> Path:
@@ -167,6 +212,27 @@ class MarkdownWriter:
         body = render_note(detail, summary)
         self._atomic_write(target, body)
         return target
+
+    @staticmethod
+    def _collision_safe_path(target: Path, body: str) -> Path:
+        body_hash = note_identity_hash(body)
+        try:
+            if note_identity_hash(target.read_text(encoding="utf-8")) == body_hash:
+                return target
+        except OSError:
+            pass
+        digest = body_hash[:8]
+        candidate = target.with_name(f"{target.stem}-{digest}{target.suffix}")
+        counter = 2
+        while candidate.exists():
+            try:
+                if note_identity_hash(candidate.read_text(encoding="utf-8")) == body_hash:
+                    return candidate
+            except OSError:
+                pass
+            candidate = target.with_name(f"{target.stem}-{digest}-{counter}{target.suffix}")
+            counter += 1
+        return candidate
 
     @staticmethod
     def _atomic_write(target: Path, body: str) -> None:

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Dedao sync daily
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+Unit=dedao-sync.service
+
+[Install]
+WantedBy=timers.target

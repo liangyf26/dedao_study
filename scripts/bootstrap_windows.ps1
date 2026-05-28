@@ -1,11 +1,16 @@
+[CmdletBinding(PositionalBinding = $false)]
 param(
-    [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
+    [string]$ProjectRoot = "",
     [string]$Python = "py -3.13",
     [switch]$SkipPlaywrightInstall
 )
 
 $ErrorActionPreference = "Stop"
 
+if (-not $ProjectRoot) {
+    $ProjectRoot = Join-Path $PSScriptRoot ".."
+}
+$ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 Set-Location $ProjectRoot
 
 if (-not (Test-Path "config.yaml") -or -not (Test-Path ".env")) {
@@ -30,4 +35,3 @@ if (-not $SkipPlaywrightInstall) {
 
 Write-Host "Running doctor..."
 & $VenvPython -m dedao_sync.cli doctor --config config.yaml --no-auth
-

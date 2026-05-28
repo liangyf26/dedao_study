@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from dedao_sync.cli import main
-from dedao_sync.models import ContentItem, RunReport, STATUS_FAILED, STATUS_SYNCED, SummaryResult
+from dedao_sync.models import ContentItem, RunReport, STATUS_FAILED, STATUS_POLICY_BLOCKED, STATUS_SYNCED, SummaryResult
 from dedao_sync.notifier import NotificationError
 from dedao_sync.repository import SyncRepository
 from dedao_sync.summarizer import SummaryError
@@ -62,6 +62,17 @@ class CliTests(unittest.TestCase):
         )
         self.assertIn("sync status: success", output.getvalue())
 
+    def test_resummarize_all_passes_include_synced(self):
+        report = RunReport(started_at=datetime(2026, 5, 27, 8, 0, 0), status="success")
+        output = io.StringIO()
+        with mock.patch("dedao_sync.cli.run_resummarize", return_value=(report, 1)) as run_resummarize:
+            with contextlib.redirect_stdout(output):
+                code = main(["resummarize", "--config", "config.yaml", "--limit", "5", "--all"])
+
+        self.assertEqual(code, 0)
+        run_resummarize.assert_called_once_with("config.yaml", limit=5, include_synced=True)
+        self.assertIn("resummarize status: success", output.getvalue())
+
     def test_parse_snapshot_show_candidates(self):
         with tempfile.TemporaryDirectory() as tmp:
             html = Path(tmp) / "page.html"
@@ -98,6 +109,7 @@ class CliTests(unittest.TestCase):
             html.write_text(
                 """
                 <html><body>
+                <audio src="/media/health.mp3" type="audio/mpeg"></audio>
                 <a href="/course/detail?id=abc">健康参考 标题</a>
                 <article>
                 <h1>健康参考 标题</h1>
@@ -131,6 +143,8 @@ class CliTests(unittest.TestCase):
             parsed = json.loads(output.getvalue())
             self.assertTrue(parsed["has_transcript"])
             self.assertGreater(parsed["transcript_chars"], 400)
+            self.assertEqual(len(parsed["media_candidates"]), 1)
+            self.assertEqual(parsed["media_candidates"][0]["mime_type"], "audio/mpeg")
             self.assertEqual(parsed["candidate_items"], 1)
             self.assertEqual(parsed["item_candidates"][0]["dedao_id"], "abc")
             self.assertTrue(any(candidate["selected"] for candidate in parsed["transcript_candidates"]))
@@ -150,8 +164,12 @@ class CliTests(unittest.TestCase):
             report.status = "partial_failed"
             report.discovered_count = 6
             report.new_count = 2
+            report.skipped_count = 3
             report.success_count = 1
+            report.request_count = 9
             report.failed_count = 1
+            report.missing_transcript_count = 1
+            report.summary_failed_count = 2
             report.finished_at = datetime(2026, 5, 27, 8, 31, 0)
             repo.finish_run(run_id, report)
 
@@ -166,8 +184,12 @@ class CliTests(unittest.TestCase):
             self.assertIn("columns=4", text)
             self.assertIn("discovered=6", text)
             self.assertIn("new=2", text)
+            self.assertIn("skipped=3", text)
             self.assertIn("success=1", text)
+            self.assertIn("requests=9", text)
             self.assertIn("failed=1", text)
+            self.assertIn("missing=1", text)
+            self.assertIn("summary_failed=2", text)
             self.assertIn(str(Path("logs/test.log")), text)
 
     def test_list_failed_outputs_items_needing_attention(self):
@@ -191,6 +213,14 @@ class CliTests(unittest.TestCase):
                 title="成功标题",
             )
             repo.upsert_item(failed, status=STATUS_FAILED, error_message="页面结构变化")
+            policy = ContentItem(
+                source_url="https://example.com/policy",
+                detail_url="https://example.com/policy",
+                dedao_id="policy",
+                column_name="栏目",
+                title="合规阻断标题",
+            )
+            repo.upsert_item(policy, status=STATUS_POLICY_BLOCKED, error_message="policy_blocked:drm_widevine")
             repo.upsert_item(synced, status=STATUS_SYNCED, file_path="note.md", has_transcript=True)
 
             output = io.StringIO()
@@ -201,6 +231,8 @@ class CliTests(unittest.TestCase):
             text = output.getvalue()
             self.assertIn("失败标题", text)
             self.assertIn("页面结构变化", text)
+            self.assertIn("合规阻断标题", text)
+            self.assertIn("policy_blocked:drm_widevine", text)
             self.assertNotIn("成功标题", text)
 
     def test_list_failed_redacts_sensitive_error_text(self):

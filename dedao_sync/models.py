@@ -14,6 +14,7 @@ STATUS_SYNCED = "synced"
 STATUS_MISSING_TRANSCRIPT = "missing_transcript"
 STATUS_SUMMARY_FAILED = "summary_failed"
 STATUS_TRANSCRIPTION_FAILED = "transcription_failed"
+STATUS_POLICY_BLOCKED = "policy_blocked"
 STATUS_EXTRACTOR_FAILED = "extractor_failed"
 STATUS_PREFLIGHT_FAILED = "preflight_failed"
 STATUS_LOGIN_REQUIRED = "login_required"
@@ -143,6 +144,7 @@ class RunReport:
     new_count: int = 0
     skipped_count: int = 0
     success_count: int = 0
+    request_count: int = 0
     failed_count: int = 0
     missing_transcript_count: int = 0
     summary_failed_count: int = 0

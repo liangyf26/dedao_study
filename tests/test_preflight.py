@@ -65,11 +65,11 @@ class PreflightTests(unittest.TestCase):
             auth.parent.mkdir(parents=True)
             auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
 
-            with mock.patch("dedao_sync.preflight.importlib.util.find_spec", return_value=None):
+            with mock.patch("dedao_sync.preflight.check_playwright_chromium", return_value=(False, "Playwright Chromium executable is missing")):
                 result = PreflightChecker(config, require_browser=True).check()
 
             self.assertFalse(result.ok)
-            self.assertTrue(any("Playwright is not installed" in error for error in result.errors))
+            self.assertTrue(any("Playwright Chromium executable is missing" in error for error in result.errors))
 
     def test_browser_dependency_is_optional_for_fake_crawler_tests(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -79,7 +79,7 @@ class PreflightTests(unittest.TestCase):
             auth.parent.mkdir(parents=True)
             auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
 
-            with mock.patch("dedao_sync.preflight.importlib.util.find_spec", return_value=None):
+            with mock.patch("dedao_sync.preflight.check_playwright_chromium", return_value=(False, "Playwright Chromium executable is missing")):
                 result = PreflightChecker(config, require_browser=False).check()
 
             self.assertTrue(result.ok)
@@ -126,6 +126,26 @@ class PreflightTests(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertTrue(any("Obsidian output path is not writable" in error for error in result.errors))
 
+    def test_output_dir_cannot_escape_vault(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = load_config(
+                write_config(
+                    root,
+                    overrides={
+                        "obsidian": {"output_dir": "../outside-vault"},
+                    },
+                )
+            )
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+
+            result = PreflightChecker(config).check()
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("obsidian.output_dir must stay inside obsidian.vault_path" in error for error in result.errors))
+
     def test_enabled_transcription_is_blocked_until_implemented(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -163,6 +183,78 @@ class PreflightTests(unittest.TestCase):
 
             self.assertFalse(result.ok)
             self.assertTrue(any("Failure HTML snapshot" in error for error in result.errors))
+
+    def test_required_feishu_webhook_is_error_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = load_config(
+                write_config(
+                    root,
+                    overrides={
+                        "feishu": {
+                            "enabled": True,
+                            "webhook_url_env": "MISSING_FEISHU_WEBHOOK",
+                        },
+                    },
+                )
+            )
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+
+            result = PreflightChecker(config, require_feishu=True).check()
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("Feishu webhook env is missing" in error for error in result.errors))
+
+    def test_required_feishu_webhook_must_be_http_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = load_config(
+                write_config(
+                    root,
+                    overrides={
+                        "feishu": {
+                            "enabled": True,
+                            "webhook_url_env": "FEISHU_WEBHOOK_URL_TEST",
+                        },
+                    },
+                )
+            )
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+
+            with mock.patch.dict("os.environ", {"FEISHU_WEBHOOK_URL_TEST": "not-a-url"}):
+                result = PreflightChecker(config, require_feishu=True).check()
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("Feishu webhook env is not a valid http(s) URL" in error for error in result.errors))
+
+    def test_summary_base_url_format_is_warned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = load_config(
+                write_config(
+                    root,
+                    overrides={
+                        "summary": {
+                            "enabled": True,
+                            "base_url_env": "SUMMARY_BASE_URL_TEST",
+                            "api_key_env": "SUMMARY_KEY_TEST",
+                        },
+                    },
+                )
+            )
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+
+            with mock.patch.dict("os.environ", {"SUMMARY_BASE_URL_TEST": "api.example.com", "SUMMARY_KEY_TEST": "sk-test"}):
+                result = PreflightChecker(config).check()
+
+            self.assertTrue(result.ok)
+            self.assertTrue(any("Summary base URL env is not a valid http(s) URL" in warning for warning in result.warnings))
 
     def test_config_semantics_are_checked(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -218,6 +310,55 @@ class PreflightTests(unittest.TestCase):
 
             self.assertFalse(result.ok)
             self.assertTrue(any("No enabled Dedao columns" in error for error in result.errors))
+
+    def test_filename_pattern_rejects_unknown_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = load_config(
+                write_config(
+                    root,
+                    overrides={
+                        "obsidian": {"filename_pattern": "{column}-{published_date}-{title}-{dedao_id}.md"},
+                    },
+                )
+            )
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+
+            result = PreflightChecker(config).check()
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("filename_pattern unsupported fields: dedao_id" in error for error in result.errors))
+
+    def test_sensitive_runtime_paths_inside_project_must_stay_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = load_config(
+                write_config(
+                    root,
+                    overrides={
+                        "dedao": {
+                            "auth_state_path": "dedao_state.json",
+                            "browser_profile_dir": "browser-profile",
+                            "failure_snapshot_dir": "page-failures",
+                        },
+                        "transcription": {"temp_dir": "media-cache"},
+                    },
+                )
+            )
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+
+            result = PreflightChecker(config).check()
+
+            self.assertFalse(result.ok)
+            text = "\n".join(result.errors)
+            self.assertIn("dedao.auth_state_path inside project must stay under data\\auth", text)
+            self.assertIn("dedao.browser_profile_dir inside project must stay under data\\browser_profile", text)
+            self.assertIn("dedao.failure_snapshot_dir inside project must stay under data\\page_failures", text)
+            self.assertIn("transcription.temp_dir inside project must stay under data\\media_cache", text)
 
 
 if __name__ == "__main__":

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import os
-import importlib.util
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from string import Formatter
 from urllib.parse import urlparse
 
-from .browser import validate_storage_state_file
+from .browser import check_playwright_chromium, validate_storage_state_file
 from .models import AppConfig
 
 
@@ -34,6 +33,52 @@ class PreflightResult:
 
 def check_config_semantics(config: AppConfig) -> PreflightResult:
     result = PreflightResult(ok=True)
+    root_dir = config.root_dir.resolve(strict=False)
+    output_dir = config.obsidian.output_dir.strip()
+    if not output_dir:
+        result.add_error("obsidian.output_dir must not be empty")
+    else:
+        output_path = Path(output_dir)
+        if output_path.is_absolute():
+            result.add_error("obsidian.output_dir must be relative to obsidian.vault_path")
+        try:
+            vault_root = config.obsidian.vault_path.resolve(strict=False)
+            output_root = (config.obsidian.vault_path / output_path).resolve(strict=False)
+        except OSError as exc:
+            result.add_error(f"Invalid obsidian.output_dir: {exc}")
+        else:
+            if not output_root.is_relative_to(vault_root):
+                result.add_error("obsidian.output_dir must stay inside obsidian.vault_path")
+
+    _check_project_sensitive_path(
+        result,
+        config.dedao.auth_state_path,
+        root_dir=root_dir,
+        allowed_root=root_dir / "data" / "auth",
+        field_name="dedao.auth_state_path",
+    )
+    _check_project_sensitive_path(
+        result,
+        config.dedao.browser_profile_dir,
+        root_dir=root_dir,
+        allowed_root=root_dir / "data" / "browser_profile",
+        field_name="dedao.browser_profile_dir",
+    )
+    _check_project_sensitive_path(
+        result,
+        config.dedao.failure_snapshot_dir,
+        root_dir=root_dir,
+        allowed_root=root_dir / "data" / "page_failures",
+        field_name="dedao.failure_snapshot_dir",
+    )
+    _check_project_sensitive_path(
+        result,
+        config.transcription.temp_dir,
+        root_dir=root_dir,
+        allowed_root=root_dir / "data" / "media_cache",
+        field_name="transcription.temp_dir",
+    )
+
     enabled_columns = [column for column in config.dedao.columns if column.enabled]
     if not enabled_columns:
         result.add_error("No enabled Dedao columns configured")
@@ -65,7 +110,30 @@ def check_config_semantics(config: AppConfig) -> PreflightResult:
     missing_fields = required_fields - fields
     if missing_fields:
         result.add_error(f"filename_pattern missing fields: {', '.join(sorted(missing_fields))}")
+    unsupported_fields = fields - required_fields
+    if unsupported_fields:
+        result.add_error(f"filename_pattern unsupported fields: {', '.join(sorted(unsupported_fields))}")
     return result
+
+
+def is_http_url(value: str) -> bool:
+    parsed = urlparse(value.strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _check_project_sensitive_path(
+    result: PreflightResult,
+    path: Path,
+    *,
+    root_dir: Path,
+    allowed_root: Path,
+    field_name: str,
+) -> None:
+    resolved = path.resolve(strict=False)
+    if not resolved.is_relative_to(root_dir):
+        return
+    if not resolved.is_relative_to(allowed_root.resolve(strict=False)):
+        result.add_error(f"{field_name} inside project must stay under {allowed_root.relative_to(root_dir)}")
 
 
 class PreflightChecker:
@@ -105,19 +173,30 @@ class PreflightChecker:
             if not ok:
                 result.add_error(f"Dedao auth state invalid, run login first: {message}")
 
-        if self.require_browser and importlib.util.find_spec("playwright") is None:
-            result.add_error("Playwright is not installed, run: pip install -e .[dev] && playwright install chromium")
+        if self.require_browser:
+            browser_ok, browser_message = check_playwright_chromium()
+            if not browser_ok:
+                result.add_error(f"{browser_message}; run: pip install -e .[dev] && playwright install chromium")
 
         if self.config.summary.enabled:
             if not os.environ.get(self.config.summary.api_key_env):
                 result.add_warning(f"Summary API key env is missing: {self.config.summary.api_key_env}")
-            if not os.environ.get(self.config.summary.base_url_env):
+            base_url = os.environ.get(self.config.summary.base_url_env)
+            if not base_url:
                 result.add_warning(f"Summary base URL env is missing: {self.config.summary.base_url_env}")
+            elif not is_http_url(base_url):
+                result.add_warning(f"Summary base URL env is not a valid http(s) URL: {self.config.summary.base_url_env}")
 
         if self.config.feishu.enabled:
             webhook = os.environ.get(self.config.feishu.webhook_url_env)
             if not webhook:
                 message = f"Feishu webhook env is missing: {self.config.feishu.webhook_url_env}"
+                if self.require_feishu:
+                    result.add_error(message)
+                else:
+                    result.add_warning(message)
+            elif not is_http_url(webhook):
+                message = f"Feishu webhook env is not a valid http(s) URL: {self.config.feishu.webhook_url_env}"
                 if self.require_feishu:
                     result.add_error(message)
                 else:

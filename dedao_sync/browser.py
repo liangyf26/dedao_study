@@ -31,6 +31,21 @@ def validate_storage_state_file(path: str | Path) -> tuple[bool, str]:
     return True, "ok"
 
 
+def check_playwright_chromium() -> tuple[bool, str]:
+    try:
+        from playwright.sync_api import sync_playwright  # type: ignore
+    except ImportError:
+        return False, "Playwright Python package is missing"
+    try:
+        with sync_playwright() as playwright:
+            executable = Path(playwright.chromium.executable_path)
+    except Exception as exc:
+        return False, f"Playwright Chromium check failed: {exc}"
+    if not executable.exists():
+        return False, f"Playwright Chromium executable is missing: {executable}"
+    return True, str(executable)
+
+
 class BrowserSession:
     def __init__(self, config: AppConfig):
         self.config = config

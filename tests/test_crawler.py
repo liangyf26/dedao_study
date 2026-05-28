@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from dedao_sync.crawler import DedaoCrawler
 from dedao_sync.models import (
@@ -50,6 +51,15 @@ class CrawlerTests(unittest.TestCase):
             self.assertEqual(path.parent, root / "debug_failures")
             self.assertTrue(path.name.endswith("-abcdef123456.html"))
             self.assertIn("失败快照", path.read_text(encoding="utf-8"))
+
+    def test_request_delay_uses_small_positive_jitter(self):
+        with mock.patch("dedao_sync.crawler.random.uniform", return_value=0.25):
+            self.assertEqual(DedaoCrawler.jittered_delay_seconds(2), 2.25)
+
+    def test_zero_request_delay_has_no_jitter(self):
+        with mock.patch("dedao_sync.crawler.random.uniform") as uniform:
+            self.assertEqual(DedaoCrawler.jittered_delay_seconds(0), 0)
+            uniform.assert_not_called()
 
 
 if __name__ == "__main__":

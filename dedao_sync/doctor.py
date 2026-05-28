@@ -6,9 +6,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .browser import validate_storage_state_file
+from .browser import check_playwright_chromium, validate_storage_state_file
 from .config import ConfigError, load_config
-from .preflight import check_config_semantics
+from .preflight import check_config_semantics, is_http_url
 
 
 @dataclass(frozen=True)
@@ -22,7 +22,7 @@ class DoctorCheck:
         return self.status == "ok"
 
 
-CORE_DEPENDENCIES = ("yaml", "playwright")
+CORE_DEPENDENCIES = ("playwright",)
 
 
 def _check_import(module_name: str) -> bool:
@@ -89,20 +89,30 @@ def run_doctor(config_path: str | Path = "config.yaml", *, require_auth: bool = 
 
     if config.summary.enabled:
         for env_name in (config.summary.base_url_env, config.summary.api_key_env):
+            env_value = os.environ.get(env_name)
+            if env_name == config.summary.base_url_env and env_value and not is_http_url(env_value):
+                checks.append(DoctorCheck(f"env:{env_name}", "warn", "invalid URL"))
+                continue
             checks.append(
                 DoctorCheck(
                     f"env:{env_name}",
-                    "ok" if os.environ.get(env_name) else "warn",
-                    "set" if os.environ.get(env_name) else "missing",
+                    "ok" if env_value else "warn",
+                    "set" if env_value else "missing",
                 )
             )
 
     if config.feishu.enabled:
+        webhook = os.environ.get(config.feishu.webhook_url_env)
+        webhook_status = "ok" if webhook else "warn"
+        webhook_message = "set" if webhook else "missing"
+        if webhook and not is_http_url(webhook):
+            webhook_status = "warn"
+            webhook_message = "invalid URL"
         checks.append(
             DoctorCheck(
                 f"env:{config.feishu.webhook_url_env}",
-                "ok" if os.environ.get(config.feishu.webhook_url_env) else "warn",
-                "set" if os.environ.get(config.feishu.webhook_url_env) else "missing",
+                webhook_status,
+                webhook_message,
             )
         )
         checks.append(
@@ -121,6 +131,21 @@ def run_doctor(config_path: str | Path = "config.yaml", *, require_auth: bool = 
                 "installed" if _check_import(dependency) else "missing",
             )
         )
+    checks.append(
+        DoctorCheck(
+            "dep:pyyaml",
+            "ok",
+            "installed" if _check_import("yaml") else "not installed; using built-in limited YAML parser",
+        )
+    )
+    browser_ok, browser_message = check_playwright_chromium()
+    checks.append(
+        DoctorCheck(
+            "dep:playwright_chromium",
+            "ok" if browser_ok else "warn",
+            browser_message,
+        )
+    )
 
     checks.append(
         DoctorCheck(

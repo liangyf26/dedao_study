@@ -57,6 +57,12 @@ class OpenAICompatibleSummaryService(SummaryService):
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                 body = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            try:
+                error_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                error_body = str(exc)
+            raise SummaryError(f"summary API HTTP {exc.code}: {redact(error_body)[:500]}") from exc
         except urllib.error.URLError as exc:
             raise SummaryError(redact(exc)) from exc
         try:

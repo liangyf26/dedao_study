@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -10,6 +11,75 @@ from dedao_sync.repository import SyncRepository
 
 
 class RepositoryTests(unittest.TestCase):
+    def test_migrate_upgrades_legacy_items_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "sync.sqlite3"
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE items (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      source_url TEXT NOT NULL,
+                      dedao_id TEXT,
+                      column_name TEXT NOT NULL,
+                      title TEXT NOT NULL,
+                      published_at TEXT,
+                      synced_at TEXT,
+                      content_hash TEXT,
+                      status TEXT NOT NULL,
+                      file_path TEXT,
+                      has_transcript INTEGER NOT NULL DEFAULT 0,
+                      transcribed INTEGER NOT NULL DEFAULT 0,
+                      summary_status TEXT,
+                      error_message TEXT,
+                      created_at TEXT NOT NULL,
+                      updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO items (
+                        source_url, dedao_id, column_name, title, status,
+                        has_transcript, transcribed, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
+                    """,
+                    ("https://example.com/legacy", "legacy", "栏目", "旧标题", "synced", "", ""),
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE runs (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      started_at TEXT NOT NULL,
+                      status TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute("CREATE TABLE run_items (run_id INTEGER NOT NULL, item_id INTEGER NOT NULL, action TEXT NOT NULL, status TEXT NOT NULL)")
+                conn.commit()
+            finally:
+                conn.close()
+
+            repo = SyncRepository(db_path)
+            repo.migrate()
+
+            rows = repo.list_items()
+            self.assertEqual(rows[0]["canonical_url"], "https://example.com/legacy")
+            self.assertTrue(rows[0]["created_at"])
+            self.assertTrue(rows[0]["updated_at"])
+            with repo.connect() as conn:
+                run_columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+            self.assertIn("request_count", run_columns)
+            item = ContentItem(
+                source_url="https://example.com/other",
+                detail_url="https://example.com/legacy",
+                dedao_id="other",
+                column_name="栏目",
+                title="新标题",
+            )
+            self.assertEqual(repo.find_existing(item)["source_url"], "https://example.com/legacy")
+
     def test_migrate_and_upsert_are_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = SyncRepository(Path(tmp) / "sync.sqlite3")
@@ -65,6 +135,7 @@ class RepositoryTests(unittest.TestCase):
             report.discovered_count = 3
             report.new_count = 2
             report.success_count = 2
+            report.request_count = 6
             repo.finish_run(run_id, report)
             self.assertGreater(run_id, 0)
             rows = repo.list_runs()
@@ -75,6 +146,7 @@ class RepositoryTests(unittest.TestCase):
             self.assertEqual(rows[0]["discovered_count"], 3)
             self.assertEqual(rows[0]["new_count"], 2)
             self.assertEqual(rows[0]["success_count"], 2)
+            self.assertEqual(rows[0]["request_count"], 6)
             self.assertEqual(rows[0]["log_path"], str(Path("logs/run.log")))
 
     def test_repository_redacts_sensitive_error_fields(self):

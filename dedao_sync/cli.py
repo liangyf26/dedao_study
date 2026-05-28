@@ -4,7 +4,6 @@ import argparse
 import json
 import shutil
 import sys
-from datetime import datetime
 from pathlib import Path
 
 from .browser import BrowserDependencyError, BrowserSession
@@ -18,6 +17,7 @@ from .models import (
     STATUS_EXTRACTOR_FAILED,
     STATUS_FAILED,
     STATUS_MISSING_TRANSCRIPT,
+    STATUS_POLICY_BLOCKED,
     STATUS_SUMMARY_FAILED,
     STATUS_TRANSCRIPTION_FAILED,
 )
@@ -28,6 +28,7 @@ from .sync import default_db_path, run_preflight, run_resummarize, run_retry_fai
 from .snapshot import parse_snapshot
 from .security import redact
 from .summarizer import SummaryError, create_summary_service
+from .time_utils import now_local
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -123,7 +124,7 @@ def cmd_retry_failed(args: argparse.Namespace) -> int:
 
 
 def cmd_resummarize(args: argparse.Namespace) -> int:
-    report, _ = run_resummarize(args.config, limit=args.limit)
+    report, _ = run_resummarize(args.config, limit=args.limit, include_synced=args.all)
     print(f"resummarize status: {report.status}")
     for failure in report.failures:
         print(f"ERROR: {redact(failure)}", file=sys.stderr)
@@ -133,9 +134,10 @@ def cmd_resummarize(args: argparse.Namespace) -> int:
 def cmd_notify_test(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     notifier = FeishuNotifier(load_feishu_credentials(config.feishu), include_titles=config.feishu.include_titles)
+    now = now_local()
     report = RunReport(
-        started_at=datetime.now(),
-        finished_at=datetime.now(),
+        started_at=now,
+        finished_at=now,
         status="success",
         total_columns=sum(1 for column in config.dedao.columns if column.enabled),
         log_path=Path("logs/notify-test.log"),
@@ -160,7 +162,7 @@ def cmd_summary_test(args: argparse.Namespace) -> int:
             detail_url="summary-test",
             column_name="摘要测试",
             title="摘要服务连通性测试",
-            published_at=datetime.now().strftime("%Y-%m-%d"),
+            published_at=now_local().strftime("%Y-%m-%d"),
         ),
         transcript_text=(
             "摘要服务连通性测试。\n\n"
@@ -210,6 +212,14 @@ def cmd_parse_snapshot(args: argparse.Namespace) -> int:
             "has_transcript": detail.has_transcript,
             "quality_reason": detail.quality_reason or "",
             "transcript_chars": len(detail.transcript_text),
+            "media_candidates": [
+                {
+                    "url": candidate.url,
+                    "mime_type": candidate.mime_type or "",
+                    "label": candidate.label or "",
+                }
+                for candidate in detail.media_candidates
+            ],
             "candidate_items": result.candidate_count,
             "transcript_path": str(result.transcript_path) if result.transcript_path else None,
             "transcript_candidates": [
@@ -241,6 +251,7 @@ def cmd_parse_snapshot(args: argparse.Namespace) -> int:
     print(f"has_transcript: {detail.has_transcript}")
     print(f"quality_reason: {detail.quality_reason or ''}")
     print(f"transcript_chars: {len(detail.transcript_text)}")
+    print(f"media_candidates: {len(detail.media_candidates)}")
     print(f"candidate_items: {result.candidate_count}")
     if args.show_candidates:
         print("transcript_candidates:")
@@ -278,7 +289,10 @@ def cmd_list(args: argparse.Namespace) -> int:
             print(
                 f"{row['id']}\t{row['started_at']}\t{row['status']}\t"
                 f"columns={row['total_columns']}\tdiscovered={row['discovered_count']}\t"
-                f"new={row['new_count']}\tsuccess={row['success_count']}\tfailed={row['failed_count']}\t"
+                f"new={row['new_count']}\tskipped={row['skipped_count']}\t"
+                f"success={row['success_count']}\trequests={row['request_count']}\t"
+                f"failed={row['failed_count']}\t"
+                f"missing={row['missing_transcript_count']}\tsummary_failed={row['summary_failed_count']}\t"
                 f"log={row['log_path'] or ''}"
             )
         return 0
@@ -289,6 +303,7 @@ def cmd_list(args: argparse.Namespace) -> int:
                 STATUS_FAILED,
                 STATUS_EXTRACTOR_FAILED,
                 STATUS_MISSING_TRANSCRIPT,
+                STATUS_POLICY_BLOCKED,
                 STATUS_SUMMARY_FAILED,
                 STATUS_TRANSCRIPTION_FAILED,
             ]
@@ -349,6 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
     resummarize = sub.add_parser("resummarize", help="Regenerate summaries")
     _add_config_arg(resummarize)
     resummarize.add_argument("--limit", type=int, default=20)
+    resummarize.add_argument("--all", action="store_true", help="Regenerate summaries for all saved transcript notes, not only missing or failed summaries")
     resummarize.set_defaults(func=cmd_resummarize)
 
     notify = sub.add_parser("notify-test", help="Send a Feishu test notification")

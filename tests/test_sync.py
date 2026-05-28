@@ -5,15 +5,19 @@ import logging
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from dedao_sync.crawler import CrawlResult
 from dedao_sync.locking import RunLock
 from dedao_sync.models import (
     ContentDetail,
     ContentItem,
+    MediaCandidate,
     SummaryResult,
     STATUS_MISSING_TRANSCRIPT,
+    STATUS_POLICY_BLOCKED,
     STATUS_EXTRACTOR_FAILED,
+    STATUS_LOGIN_REQUIRED,
     STATUS_LOCKED,
     STATUS_SUMMARY_FAILED,
     STATUS_SYNCED,
@@ -67,6 +71,15 @@ def write_config(root: Path) -> Path:
     return path
 
 
+def write_config_with_overrides(root: Path, overrides: dict) -> Path:
+    path = write_config(root)
+    config = json.loads(path.read_text(encoding="utf-8"))
+    for section, values in overrides.items():
+        config[section].update(values)
+    path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 class SyncTests(unittest.TestCase):
     def test_preflight_success_without_auth_requirement(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -77,6 +90,29 @@ class SyncTests(unittest.TestCase):
             self.assertIsNotNone(run_id)
             self.assertTrue((root / "data" / "dedao_sync.sqlite3").exists())
             self.assertTrue((root / "logs").exists())
+            logging.shutdown()
+
+    def test_preflight_notification_failure_is_logged_but_not_fatal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config_with_overrides(
+                root,
+                {
+                    "feishu": {
+                        "enabled": True,
+                        "webhook_url_env": "FEISHU_WEBHOOK_URL_TEST",
+                    }
+                },
+            )
+
+            with mock.patch.dict("os.environ", {"FEISHU_WEBHOOK_URL_TEST": "https://example.com/hook"}):
+                with mock.patch("dedao_sync.sync.FeishuNotifier.send_run_report", side_effect=RuntimeError("network denied")):
+                    with self.assertLogs("dedao_sync.sync", level="WARNING") as captured:
+                        report, run_id = run_preflight(config_path, require_auth=False)
+
+            self.assertEqual(report.status, "success")
+            self.assertIsNotNone(run_id)
+            self.assertTrue(any("feishu notification failed: network denied" in line for line in captured.output))
             logging.shutdown()
 
     def test_sync_writes_note_records_db_and_skips_second_run(self):
@@ -98,6 +134,7 @@ class SyncTests(unittest.TestCase):
             report, _ = run_sync(config_path, crawler=crawler, summary_service=FakeSummary(), notifier=FakeNotifier())
             self.assertEqual(report.status, "success")
             self.assertEqual(report.success_count, 1)
+            self.assertEqual(report.request_count, 3)
             notes = list((root / "vault" / "得到" / "栏目").glob("*.md"))
             self.assertEqual(len(notes), 1)
             self.assertIn("## 原子卡片", notes[0].read_text(encoding="utf-8"))
@@ -181,6 +218,7 @@ class SyncTests(unittest.TestCase):
             report, _ = run_sync(config_path, dry_run=True, crawler=crawler, summary_service=FakeSummary(), notifier=FakeNotifier())
             self.assertEqual(report.new_count, 1)
             self.assertEqual(report.skipped_count, 1)
+            self.assertEqual(report.request_count, 2)
             self.assertEqual(SyncRepository(default_db_path(root)).list_items(), [])
             report2, _ = run_sync(config_path, crawler=crawler, summary_service=FakeSummary(), notifier=FakeNotifier())
             self.assertEqual(report2.success_count, 1)
@@ -189,7 +227,15 @@ class SyncTests(unittest.TestCase):
     def test_run_sync_can_skip_notification_for_manual_check(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            config_path = write_config(root)
+            config_path = write_config_with_overrides(
+                root,
+                {
+                    "feishu": {
+                        "enabled": True,
+                        "webhook_url_env": "MISSING_FEISHU_WEBHOOK",
+                    }
+                },
+            )
             auth = root / "data" / "auth" / "dedao_state.json"
             auth.parent.mkdir(parents=True)
             auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
@@ -207,6 +253,7 @@ class SyncTests(unittest.TestCase):
             )
 
             self.assertEqual(report.new_count, 1)
+            self.assertNotEqual(report.status, "preflight_failed")
             self.assertEqual(notifier.reports, [])
             logging.shutdown()
 
@@ -225,6 +272,34 @@ class SyncTests(unittest.TestCase):
 
             self.assertEqual(report.status, "success")
             self.assertEqual(len(notifier.reports), 1)
+            logging.shutdown()
+
+    def test_login_expired_is_recorded_and_notified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+            notifier = FakeNotifier()
+
+            report, run_id = run_sync(
+                config_path,
+                crawler=ExpiredLoginCrawler(),
+                summary_service=FakeSummary(),
+                notifier=notifier,
+            )
+
+            self.assertEqual(report.status, STATUS_LOGIN_REQUIRED)
+            self.assertEqual(report.failed_count, 1)
+            self.assertEqual(report.request_count, 1)
+            self.assertTrue(any("重新运行 dedao-sync login" in failure for failure in report.failures))
+            self.assertEqual(len(notifier.reports), 1)
+            self.assertEqual(notifier.reports[0].status, STATUS_LOGIN_REQUIRED)
+            runs = SyncRepository(default_db_path(root)).list_runs()
+            self.assertEqual(runs[0]["id"], run_id)
+            self.assertEqual(runs[0]["status"], STATUS_LOGIN_REQUIRED)
+            self.assertIn("dedao-sync login", runs[0]["error_message"])
             logging.shutdown()
 
     def test_empty_untrusted_crawl_result_is_failure(self):
@@ -261,6 +336,69 @@ class SyncTests(unittest.TestCase):
             self.assertIn("未找到启用的栏目", report.failures[0])
             logging.shutdown()
 
+    def test_sync_requires_feishu_webhook_when_feishu_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config_with_overrides(
+                root,
+                {
+                    "feishu": {
+                        "enabled": True,
+                        "webhook_url_env": "MISSING_FEISHU_WEBHOOK",
+                    }
+                },
+            )
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+
+            report, _ = run_sync(config_path, crawler=FakeCrawler([], {}), summary_service=FakeSummary(), notifier=FakeNotifier())
+
+            self.assertEqual(report.status, "preflight_failed")
+            self.assertTrue(any("Feishu webhook env is missing" in failure for failure in report.failures))
+            logging.shutdown()
+
+    def test_retry_failed_requires_feishu_webhook_when_feishu_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config_with_overrides(
+                root,
+                {
+                    "feishu": {
+                        "enabled": True,
+                        "webhook_url_env": "MISSING_FEISHU_WEBHOOK",
+                    }
+                },
+            )
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+
+            report, _ = run_retry_failed(config_path, crawler=FakeCrawler([], {}), summary_service=FakeSummary(), notifier=FakeNotifier())
+
+            self.assertEqual(report.status, "preflight_failed")
+            self.assertTrue(any("Feishu webhook env is missing" in failure for failure in report.failures))
+            logging.shutdown()
+
+    def test_resummarize_requires_feishu_webhook_when_feishu_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config_with_overrides(
+                root,
+                {
+                    "feishu": {
+                        "enabled": True,
+                        "webhook_url_env": "MISSING_FEISHU_WEBHOOK",
+                    }
+                },
+            )
+
+            report, _ = run_resummarize(config_path, summary_service=FakeSummary(), notifier=FakeNotifier())
+
+            self.assertEqual(report.status, "preflight_failed")
+            self.assertTrue(any("Feishu webhook env is missing" in failure for failure in report.failures))
+            logging.shutdown()
+
     def test_missing_transcript_marks_run_partial_failed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -278,6 +416,31 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(report.missing_by_column["栏目"], ["健康参考 M"])
             rows = SyncRepository(default_db_path(root)).list_items()
             self.assertEqual(rows[0]["status"], STATUS_MISSING_TRANSCRIPT)
+            logging.shutdown()
+
+    def test_missing_transcript_records_media_candidate_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+            item = ContentItem("https://example.com/media", "栏目", "健康参考 Media", "https://example.com/media", dedao_id="media")
+            crawler = MissingTranscriptCrawler(
+                item,
+                media_candidates=(
+                    MediaCandidate("https://example.com/audio.mp3", "audio/mpeg", "audio"),
+                    MediaCandidate("https://example.com/video.mp4", "video/mp4", "video"),
+                ),
+            )
+
+            report, run_id = run_sync(config_path, crawler=crawler, summary_service=FakeSummary(), notifier=FakeNotifier())
+
+            self.assertEqual(report.status, "partial_failed")
+            rows = SyncRepository(default_db_path(root)).list_items()
+            self.assertIn("media_candidates=2", rows[0]["error_message"])
+            run_items = SyncRepository(default_db_path(root)).list_run_items(run_id)
+            self.assertIn("audio/mpeg", run_items[0]["message"])
             logging.shutdown()
 
     def test_extractor_failure_records_diagnostic_path(self):
@@ -303,6 +466,32 @@ class SyncTests(unittest.TestCase):
             self.assertIn(str(diagnostic_path), rows[0]["error_message"])
             run_items = repo.list_run_items(run_id)
             self.assertIn(str(diagnostic_path), run_items[0]["message"])
+            logging.shutdown()
+
+    def test_policy_blocked_item_is_not_written_as_missing_transcript(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+            item = ContentItem("https://example.com/policy", "栏目", "健康参考 Policy", "https://example.com/policy", dedao_id="policy")
+            crawler = PolicyBlockedCrawler(item)
+
+            report, run_id = run_sync(config_path, crawler=crawler, summary_service=FakeSummary(), notifier=FakeNotifier())
+
+            self.assertEqual(report.status, "partial_failed")
+            self.assertEqual(report.failed_count, 1)
+            self.assertEqual(report.missing_transcript_count, 0)
+            self.assertTrue(any("policy_blocked:encrypted_hls_key" in failure for failure in report.failures))
+            repo = SyncRepository(default_db_path(root))
+            rows = repo.list_items()
+            self.assertEqual(rows[0]["status"], STATUS_POLICY_BLOCKED)
+            self.assertIn("policy_blocked:encrypted_hls_key", rows[0]["error_message"])
+            self.assertEqual(list((root / "vault" / "得到" / "栏目").glob("*.md")), [])
+            run_items = repo.list_run_items(run_id)
+            self.assertEqual(run_items[0]["action"], "policy")
+            self.assertEqual(run_items[0]["run_item_status"], STATUS_POLICY_BLOCKED)
             logging.shutdown()
 
     def test_summary_failure_preserves_note_and_marks_run_partial_failed(self):
@@ -360,6 +549,7 @@ class SyncTests(unittest.TestCase):
             crawler = FakeCrawler([], {"f": "健康参考 F\n\n第一段内容很长，足够形成正文。\n\n第二段继续展开。\n\n第三段给出边界。"})
             report, _ = run_retry_failed(config_path, crawler=crawler, summary_service=FakeSummary(), notifier=FakeNotifier())
             self.assertEqual(report.success_count, 1)
+            self.assertEqual(report.request_count, 2)
             self.assertEqual(SyncRepository(default_db_path(root)).list_items()[0]["status"], STATUS_SYNCED)
             logging.shutdown()
 
@@ -381,6 +571,24 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(report.discovered_count, 1)
             self.assertEqual(report.success_count, 1)
             self.assertEqual(SyncRepository(default_db_path(root)).list_items()[0]["status"], STATUS_SYNCED)
+            logging.shutdown()
+
+    def test_retry_failed_does_not_auto_retry_policy_blocked_items(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+            repo = SyncRepository(default_db_path(root))
+            repo.migrate()
+            item = ContentItem("https://example.com/policy-retry", "栏目", "健康参考 Policy", "https://example.com/policy-retry", dedao_id="policy-retry")
+            repo.upsert_item(item, status=STATUS_POLICY_BLOCKED, error_message="policy_blocked:drm_widevine")
+
+            report, _ = run_retry_failed(config_path, crawler=NoFetchCrawler(), summary_service=FakeSummary(), notifier=FakeNotifier())
+
+            self.assertEqual(report.discovered_count, 0)
+            self.assertEqual(SyncRepository(default_db_path(root)).list_items()[0]["status"], STATUS_POLICY_BLOCKED)
             logging.shutdown()
 
     def test_retry_failed_resummarizes_existing_note_without_duplicate_file(self):
@@ -454,6 +662,64 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(SyncRepository(default_db_path(root)).list_items()[0]["status"], STATUS_SYNCED)
             logging.shutdown()
 
+    def test_resummarize_default_skips_successful_summaries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            repo = SyncRepository(default_db_path(root))
+            repo.migrate()
+            note_dir = root / "vault" / "得到" / "栏目"
+            note_dir.mkdir(parents=True)
+            note = note_dir / "栏目-2026-05-27-健康参考.md"
+            note.write_text("# 旧标题\n\n## 全文稿\n\n健康参考\n\n第一段内容很长。\n\n第二段继续展开。\n\n第三段补充。", encoding="utf-8")
+            item = ContentItem("https://example.com/ok-summary", "栏目", "健康参考", "https://example.com/ok-summary", dedao_id="ok-summary")
+            repo.upsert_item(
+                item,
+                status=STATUS_SYNCED,
+                content_hash="hash-ok-summary",
+                file_path=note,
+                has_transcript=True,
+                summary_status="ok",
+            )
+
+            report, _ = run_resummarize(config_path, summary_service=FakeSummary(), notifier=FakeNotifier())
+
+            self.assertEqual(report.discovered_count, 0)
+            self.assertNotIn("卡片", note.read_text(encoding="utf-8"))
+            logging.shutdown()
+
+    def test_resummarize_all_refreshes_successful_summaries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            repo = SyncRepository(default_db_path(root))
+            repo.migrate()
+            note_dir = root / "vault" / "得到" / "栏目"
+            note_dir.mkdir(parents=True)
+            note = note_dir / "栏目-2026-05-27-健康参考.md"
+            note.write_text("# 旧标题\n\n## 全文稿\n\n健康参考\n\n第一段内容很长。\n\n第二段继续展开。\n\n第三段补充。", encoding="utf-8")
+            item = ContentItem("https://example.com/all-summary", "栏目", "健康参考", "https://example.com/all-summary", dedao_id="all-summary")
+            repo.upsert_item(
+                item,
+                status=STATUS_SYNCED,
+                content_hash="hash-all-summary",
+                file_path=note,
+                has_transcript=True,
+                summary_status="ok",
+            )
+
+            report, _ = run_resummarize(
+                config_path,
+                include_synced=True,
+                summary_service=FakeSummary(),
+                notifier=FakeNotifier(),
+            )
+
+            self.assertEqual(report.discovered_count, 1)
+            self.assertEqual(report.success_count, 1)
+            self.assertIn("卡片", note.read_text(encoding="utf-8"))
+            logging.shutdown()
+
 
 class FakeCrawler:
     def __init__(self, items: list[ContentItem], transcripts: dict[str, str], *, empty_but_valid: bool = False):
@@ -474,8 +740,9 @@ class FakeCrawler:
 
 
 class MissingTranscriptCrawler:
-    def __init__(self, item: ContentItem):
+    def __init__(self, item: ContentItem, media_candidates=()):
         self.item = item
+        self.media_candidates = tuple(media_candidates)
 
     def check_login(self) -> bool:
         return True
@@ -484,7 +751,13 @@ class MissingTranscriptCrawler:
         return CrawlResult(items=[self.item])
 
     def fetch_detail(self, item: ContentItem) -> ContentDetail:
-        return ContentDetail(item=item, transcript_text="", has_transcript=False, raw_html_hash="html-missing")
+        return ContentDetail(
+            item=item,
+            transcript_text="",
+            has_transcript=False,
+            media_candidates=self.media_candidates,
+            raw_html_hash="html-missing",
+        )
 
 
 class ExtractorFailureCrawler:
@@ -506,6 +779,27 @@ class ExtractorFailureCrawler:
             raw_html_hash="html-extractor-failed",
             quality_reason="too_short",
             diagnostic_path=self.diagnostic_path,
+        )
+
+
+class PolicyBlockedCrawler:
+    def __init__(self, item: ContentItem):
+        self.item = item
+
+    def check_login(self) -> bool:
+        return True
+
+    def list_items(self, column):
+        return CrawlResult(items=[self.item])
+
+    def fetch_detail(self, item: ContentItem) -> ContentDetail:
+        return ContentDetail(
+            item=item,
+            transcript_text="",
+            has_transcript=False,
+            raw_html_hash="html-policy",
+            quality_reason="policy_blocked:encrypted_hls_key",
+            media_candidates=(MediaCandidate("https://example.com/protected.m3u8", "application/vnd.apple.mpegurl", "video"),),
         )
 
 
@@ -540,6 +834,11 @@ class NoFetchCrawler:
 
     def fetch_detail(self, item: ContentItem) -> ContentDetail:
         raise AssertionError("fetch_detail should not be called for saved summary_failed notes")
+
+
+class ExpiredLoginCrawler:
+    def check_login(self) -> bool:
+        return False
 
 
 class FakeSummary:

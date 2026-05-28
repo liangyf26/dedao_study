@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import io
+import json
+import urllib.error
 import unittest
+from unittest import mock
 
 from dedao_sync.models import ContentDetail, ContentItem, SummaryResult
-from dedao_sync.summarizer import SummaryError, build_summary_prompt, finalize_summary_result, parse_summary_text
+from dedao_sync.summarizer import (
+    OpenAICompatibleSummaryService,
+    SummaryError,
+    build_summary_prompt,
+    finalize_summary_result,
+    parse_summary_text,
+)
 
 
 class SummarizerTests(unittest.TestCase):
@@ -104,6 +114,97 @@ class SummarizerTests(unittest.TestCase):
     def test_empty_json_summary_raises(self):
         with self.assertRaises(SummaryError):
             parse_summary_text('{"atomic_cards": [], "permanent_note": ""}')
+
+    def test_openai_compatible_service_sends_chat_completion_request(self):
+        config = make_summary_config()
+        item = ContentItem("https://example.com/1", "栏目", "标题", "https://example.com/1")
+        detail = ContentDetail(item=item, transcript_text="正文\n\n第一段\n\n第二段", has_transcript=True)
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["url"] = request.full_url
+            captured["auth"] = request.get_header("Authorization")
+            captured["content_type"] = request.get_header("Content-type")
+            captured["timeout"] = timeout
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeHttpResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "atomic_cards": ["卡片"],
+                                        "permanent_note": "永久笔记",
+                                        "keywords": ["关键词"],
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            }
+                        }
+                    ]
+                }
+            )
+
+        with mock.patch.dict(
+            "os.environ",
+            {"BASE": "https://api.example.com/v1/", "KEY": "sk-test-secret"},
+            clear=False,
+        ):
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                result = OpenAICompatibleSummaryService(config, timeout_seconds=7).summarize(detail)
+
+        self.assertEqual(captured["url"], "https://api.example.com/v1/chat/completions")
+        self.assertEqual(captured["auth"], "Bearer sk-test-secret")
+        self.assertEqual(captured["content_type"], "application/json")
+        self.assertEqual(captured["timeout"], 7)
+        self.assertEqual(captured["payload"]["model"], "deepseek-v4-pro")
+        self.assertIn("只输出 JSON", captured["payload"]["messages"][1]["content"])
+        self.assertEqual(result.atomic_cards, ("卡片",))
+        self.assertEqual(result.keywords, ("关键词",))
+
+    def test_openai_compatible_service_redacts_http_error_body(self):
+        config = make_summary_config()
+        item = ContentItem("https://example.com/1", "栏目", "标题", "https://example.com/1")
+        detail = ContentDetail(item=item, transcript_text="正文", has_transcript=True)
+        error = urllib.error.HTTPError(
+            "https://api.example.com/v1/chat/completions",
+            401,
+            "Unauthorized",
+            hdrs=None,
+            fp=io.BytesIO(b'{"error":"api_key=sk-live-secret Authorization: Bearer abc.def"}'),
+        )
+
+        with mock.patch.dict("os.environ", {"BASE": "https://api.example.com/v1", "KEY": "sk-test-secret"}, clear=False):
+            with mock.patch("urllib.request.urlopen", side_effect=error):
+                with self.assertRaises(SummaryError) as raised:
+                    OpenAICompatibleSummaryService(config).summarize(detail)
+
+        message = str(raised.exception)
+        self.assertIn("summary API HTTP 401", message)
+        self.assertIn("[REDACTED]", message)
+        self.assertNotIn("sk-live-secret", message)
+        self.assertNotIn("abc.def", message)
+
+
+def make_summary_config():
+    from dedao_sync.models import SummaryConfig
+
+    return SummaryConfig(True, "opencode_go", "deepseek-v4-pro", "BASE", "KEY")
+
+
+class FakeHttpResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
 
 
 if __name__ == "__main__":

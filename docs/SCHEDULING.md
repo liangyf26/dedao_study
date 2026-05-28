@@ -22,6 +22,15 @@ dedao-sync doctor --config config.yaml --json
 powershell.exe -ExecutionPolicy Bypass -File .\scripts\run_dedao_sync.ps1
 ```
 
+指定配置文件或命令：
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\run_dedao_sync.ps1 -ConfigPath config.yaml
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\run_dedao_sync.ps1 -Command check
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\run_dedao_sync.ps1 -Command sync --column "脱不花·长谈"
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\run_dedao_sync.ps1 -Command resummarize --all
+```
+
 ## 注册 Windows 任务计划
 
 默认每天 08:00 执行：
@@ -34,6 +43,18 @@ powershell.exe -ExecutionPolicy Bypass -File .\scripts\register_windows_task.ps1
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File .\scripts\register_windows_task.ps1 -At "07:30"
+```
+
+指定配置文件：
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\register_windows_task.ps1 -ConfigPath "config.yaml"
+```
+
+注册维护任务时指定命令和额外参数：
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\register_windows_task.ps1 -TaskName "DedaoSync-Changtan" -Command sync -At "08:30" --column "脱不花·长谈"
 ```
 
 任务名默认为：
@@ -67,6 +88,14 @@ Unregister-ScheduledTask -TaskName DedaoSyncToObsidian -Confirm:$false
 ```text
 logs/
 ```
+
+任务计划 wrapper 还会把 PowerShell 层面的启动、参数和退出码追加写入：
+
+```text
+logs/scheduled-YYYY-MM-DD.log
+```
+
+这能覆盖 Python 进程尚未启动、虚拟环境路径错误、任务计划工作目录异常等早期失败。
 
 每日运行结束后，无论成功、部分失败还是登录失效，都会尽量通过飞书发送运行结果。飞书发送失败不会影响主流程，但会写入日志。
 

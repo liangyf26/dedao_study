@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from pathlib import Path
 
 from .security import redact
+from .time_utils import now_local
 
 
 class RedactingFormatter(logging.Formatter):
@@ -16,7 +16,7 @@ class RedactingFormatter(logging.Formatter):
 def setup_logging(root_dir: Path) -> Path:
     logs_dir = root_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    log_path = logs_dir / f"{datetime.now().strftime('%Y-%m-%d')}.log"
+    log_path = logs_dir / f"{now_local().strftime('%Y-%m-%d')}.log"
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
     for handler in list(logger.handlers):

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import socket
-from datetime import datetime
 from pathlib import Path
 
 from .config import load_config
@@ -18,6 +17,7 @@ from .models import (
     STATUS_LOGIN_REQUIRED,
     STATUS_LOCKED,
     STATUS_MISSING_TRANSCRIPT,
+    STATUS_POLICY_BLOCKED,
     STATUS_PREFLIGHT_FAILED,
     STATUS_SKIPPED,
     STATUS_SUMMARY_FAILED,
@@ -30,6 +30,7 @@ from .repository import SyncRepository
 from .repository import row_to_content_item
 from .security import redact
 from .summarizer import SummaryError, create_summary_service
+from .time_utils import now_local
 
 
 LOGGER = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ def default_lock_path(root_dir: Path) -> Path:
 
 
 def new_run_report(**kwargs) -> RunReport:
-    report = RunReport(started_at=datetime.now(), **kwargs)
+    report = RunReport(started_at=now_local(), **kwargs)
     report.metadata["host"] = socket.gethostname()
     return report
 
@@ -58,9 +59,17 @@ def detail_failure_message(detail: ContentDetail) -> str | None:
     parts = []
     if detail.quality_reason:
         parts.append(detail.quality_reason)
+    if detail.media_candidates:
+        labels = sorted({candidate.mime_type or candidate.label or "media" for candidate in detail.media_candidates})
+        suffix = f" ({', '.join(labels[:3])})" if labels else ""
+        parts.append(f"media_candidates={len(detail.media_candidates)}{suffix}")
     if detail.diagnostic_path:
         parts.append(f"diagnostic_html={detail.diagnostic_path}")
     return "; ".join(parts) or None
+
+
+def is_policy_blocked(detail: ContentDetail) -> bool:
+    return bool(detail.quality_reason and detail.quality_reason.startswith("policy_blocked:"))
 
 
 def add_report_item(bucket: dict[str, list[str]], column: str, title: str, note: object | None = None) -> None:
@@ -86,19 +95,19 @@ def run_preflight(config_path: str | Path = "config.yaml", *, require_auth: bool
         report.status = STATUS_PREFLIGHT_FAILED
         report.failed_count = len(result.errors)
         report.failures.extend(result.errors)
-        report.finished_at = datetime.now()
+        report.finished_at = now_local()
         repo.finish_run(run_id, report, "\n".join(result.errors))
     else:
         report.status = "success"
-        report.finished_at = datetime.now()
+        report.finished_at = now_local()
         repo.finish_run(run_id, report)
 
     notifier = FeishuNotifier(load_feishu_credentials(config.feishu), include_titles=config.feishu.include_titles)
     try:
         notifier.send_run_report(report)
-    except Exception:
+    except Exception as exc:
         # Notification must not affect the main flow.
-        pass
+        LOGGER.warning("feishu notification failed: %s", exc)
     return report, run_id
 
 
@@ -144,7 +153,7 @@ def run_sync(
             config,
             require_auth=True,
             require_browser=crawler is None,
-            require_feishu=config.feishu.enabled,
+            require_feishu=config.feishu.enabled and send_notification,
         ).check()
         if not preflight.ok:
             report.status = STATUS_PREFLIGHT_FAILED
@@ -156,6 +165,7 @@ def run_sync(
 
         crawler = crawler or DedaoCrawler(config)
         try:
+            report.request_count += 1
             if not crawler.check_login():
                 report.status = STATUS_LOGIN_REQUIRED
                 report.failed_count = 1
@@ -173,6 +183,7 @@ def run_sync(
         for column in enabled_columns:
             LOGGER.info("checking column: %s", column.name)
             try:
+                report.request_count += 1
                 crawl_result = crawler.list_items(column)
             except Exception as exc:
                 report.failed_count += 1
@@ -199,8 +210,22 @@ def run_sync(
                     continue
 
                 try:
+                    report.request_count += 1
                     detail = crawler.fetch_detail(item)
                     synced_item = detail.item
+                    if is_policy_blocked(detail):
+                        failure_message = detail_failure_message(detail)
+                        item_id = repo.upsert_item(
+                            synced_item,
+                            status=STATUS_POLICY_BLOCKED,
+                            content_hash=detail.raw_html_hash,
+                            has_transcript=False,
+                            error_message=failure_message,
+                        )
+                        repo.add_run_item(run_id, item_id, "policy", STATUS_POLICY_BLOCKED, failure_message)
+                        report.failed_count += 1
+                        report.failures.append(redact(f"{synced_item.column_name}/{synced_item.title}: {failure_message}"))
+                        continue
                     if not detail.has_transcript:
                         status = STATUS_EXTRACTOR_FAILED if detail.quality_reason else STATUS_MISSING_TRANSCRIPT
                         failure_message = detail_failure_message(detail)
@@ -267,7 +292,7 @@ def run_sync(
         return report, run_id
     finally:
         lock.release()
-        report.finished_at = datetime.now()
+        report.finished_at = now_local()
         repo.finish_run(run_id, report, "\n".join(report.failures) if report.failures else None)
         if send_notification:
             try:
@@ -314,7 +339,12 @@ def run_retry_failed(
             report.failures.append(redact(exc))
             return report, run_id
 
-        preflight = PreflightChecker(config, require_auth=True, require_browser=crawler is None).check()
+        preflight = PreflightChecker(
+            config,
+            require_auth=True,
+            require_browser=crawler is None,
+            require_feishu=config.feishu.enabled,
+        ).check()
         if not preflight.ok:
             report.status = STATUS_PREFLIGHT_FAILED
             report.failed_count = len(preflight.errors)
@@ -323,6 +353,7 @@ def run_retry_failed(
 
         crawler = crawler or DedaoCrawler(config)
         try:
+            report.request_count += 1
             if not crawler.check_login():
                 report.status = STATUS_LOGIN_REQUIRED
                 report.failed_count = 1
@@ -374,8 +405,21 @@ def run_retry_failed(
                         report.added_by_column.setdefault(item.column_name, []).append(item.title)
                         continue
 
+                report.request_count += 1
                 detail = crawler.fetch_detail(item)
                 synced_item = detail.item
+                if is_policy_blocked(detail):
+                    failure_message = detail_failure_message(detail)
+                    repo.upsert_item(
+                        synced_item,
+                        status=STATUS_POLICY_BLOCKED,
+                        content_hash=detail.raw_html_hash,
+                        error_message=failure_message,
+                    )
+                    repo.add_run_item(run_id, int(row["id"]), "policy", STATUS_POLICY_BLOCKED, failure_message)
+                    report.failed_count += 1
+                    report.failures.append(redact(f"{synced_item.column_name}/{synced_item.title}: {failure_message}"))
+                    continue
                 if not detail.has_transcript:
                     status = STATUS_EXTRACTOR_FAILED if detail.quality_reason else STATUS_MISSING_TRANSCRIPT
                     failure_message = detail_failure_message(detail)
@@ -425,7 +469,7 @@ def run_retry_failed(
         return report, run_id
     finally:
         lock.release()
-        report.finished_at = datetime.now()
+        report.finished_at = now_local()
         repo.finish_run(run_id, report, "\n".join(report.failures) if report.failures else None)
         try:
             notifier.send_run_report(report)
@@ -437,6 +481,7 @@ def run_resummarize(
     config_path: str | Path = "config.yaml",
     *,
     limit: int = 20,
+    include_synced: bool = False,
     summary_service=None,
     notifier: FeishuNotifier | None = None,
 ) -> tuple[RunReport, int]:
@@ -449,7 +494,7 @@ def run_resummarize(
     notifier = notifier or FeishuNotifier(load_feishu_credentials(config.feishu), include_titles=config.feishu.include_titles)
     writer = MarkdownWriter(config)
     summary_service = summary_service or create_summary_service(config.summary)
-    rows = repo.list_items_needing_summary(limit=limit)
+    rows = repo.list_items_needing_summary(limit=limit, include_synced=include_synced)
     report.discovered_count = len(rows)
     lock = RunLock(default_lock_path(config.root_dir))
 
@@ -460,6 +505,18 @@ def run_resummarize(
             report.status = STATUS_LOCKED
             report.failed_count = 1
             report.failures.append(redact(exc))
+            return report, run_id
+
+        preflight = PreflightChecker(
+            config,
+            require_auth=False,
+            require_browser=False,
+            require_feishu=config.feishu.enabled,
+        ).check()
+        if not preflight.ok:
+            report.status = STATUS_PREFLIGHT_FAILED
+            report.failed_count = len(preflight.errors)
+            report.failures.extend(preflight.errors)
             return report, run_id
 
         for row in rows:
@@ -502,7 +559,7 @@ def run_resummarize(
         return report, run_id
     finally:
         lock.release()
-        report.finished_at = datetime.now()
+        report.finished_at = now_local()
         repo.finish_run(run_id, report, "\n".join(report.failures) if report.failures else None)
         try:
             notifier.send_run_report(report)

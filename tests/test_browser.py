@@ -3,8 +3,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from dedao_sync.browser import validate_storage_state_file
+from dedao_sync.browser import check_playwright_chromium, validate_storage_state_file
 
 
 VALID_STATE = '{"cookies":[{"name":"sid","value":"test","domain":".dedao.cn","path":"/"}],"origins":[]}'
@@ -40,6 +41,13 @@ class BrowserTests(unittest.TestCase):
 
             self.assertFalse(ok)
             self.assertIn("no cookies or origins", message)
+
+    def test_check_playwright_chromium_reports_missing_package(self):
+        with mock.patch.dict("sys.modules", {"playwright.sync_api": None}):
+            ok, message = check_playwright_chromium()
+
+        self.assertFalse(ok)
+        self.assertIn("Playwright Python package is missing", message)
 
 
 if __name__ == "__main__":

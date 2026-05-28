@@ -55,7 +55,7 @@ def _parse_scalar(value: str) -> Any:
         return value
 
 
-def _bool(value: Any) -> bool:
+def _bool(value: Any, field_name: str) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -64,7 +64,9 @@ def _bool(value: Any) -> bool:
             return True
         if normalized in {"false", "no", "0", "off", ""}:
             return False
-    return bool(value)
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    raise ConfigError(f"Invalid boolean value for {field_name}: {value!r}")
 
 
 def _load_yaml_limited(path: Path) -> dict[str, Any]:
@@ -168,7 +170,7 @@ def load_config(path: str | Path = "config.yaml", *, root_dir: str | Path | None
         ColumnConfig(
             name=str(item["name"]),
             url=str(item["url"]),
-            enabled=_bool(item.get("enabled", True)),
+            enabled=_bool(item.get("enabled", True), "dedao.columns[].enabled"),
         )
         for item in dedao.get("columns", [])
     )
@@ -184,30 +186,33 @@ def load_config(path: str | Path = "config.yaml", *, root_dir: str | Path | None
         dedao=DedaoConfig(
             auth_state_path=_path(str(dedao.get("auth_state_path", "data/auth/dedao_state.json")), root),
             browser_profile_dir=_path(str(dedao.get("browser_profile_dir", "data/browser_profile")), root),
-            headless=_bool(dedao.get("headless", False)),
+            headless=_bool(dedao.get("headless", False), "dedao.headless"),
             request_interval_seconds=float(dedao.get("request_interval_seconds", 2)),
-            save_failure_html=_bool(dedao.get("save_failure_html", False)),
+            save_failure_html=_bool(dedao.get("save_failure_html", False), "dedao.save_failure_html"),
             failure_snapshot_dir=_path(str(dedao.get("failure_snapshot_dir", "data/page_failures")), root),
             columns=columns,
         ),
         summary=SummaryConfig(
-            enabled=_bool(summary.get("enabled", True)),
+            enabled=_bool(summary.get("enabled", True), "summary.enabled"),
             provider=str(summary.get("provider", "opencode_go")),
             model=str(summary.get("model", "deepseek-v4-pro")),
             base_url_env=str(summary.get("base_url_env", "OPENCODE_GO_BASE_URL")),
             api_key_env=str(summary.get("api_key_env", "OPENCODE_GO_API_KEY")),
         ),
         transcription=TranscriptionConfig(
-            enabled=_bool(transcription.get("enabled", False)),
+            enabled=_bool(transcription.get("enabled", False), "transcription.enabled"),
             provider=str(transcription.get("provider", "faster_whisper")),
-            delete_media_after_transcription=_bool(transcription.get("delete_media_after_transcription", True)),
+            delete_media_after_transcription=_bool(
+                transcription.get("delete_media_after_transcription", True),
+                "transcription.delete_media_after_transcription",
+            ),
             temp_dir=_path(str(transcription.get("temp_dir", "data/media_cache")), root),
         ),
         feishu=FeishuConfig(
-            enabled=_bool(feishu.get("enabled", True)),
+            enabled=_bool(feishu.get("enabled", True), "feishu.enabled"),
             webhook_url_env=str(feishu.get("webhook_url_env", "FEISHU_WEBHOOK_URL")),
             secret_env=str(feishu.get("secret_env", "FEISHU_WEBHOOK_SECRET")),
-            include_titles=_bool(feishu.get("include_titles", True)),
+            include_titles=_bool(feishu.get("include_titles", True), "feishu.include_titles"),
         ),
         root_dir=root,
     )

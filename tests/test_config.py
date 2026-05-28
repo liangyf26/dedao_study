@@ -4,7 +4,7 @@ import unittest
 import tempfile
 from pathlib import Path
 
-from dedao_sync.config import load_config
+from dedao_sync.config import ConfigError, load_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,6 +61,36 @@ feishu:
             self.assertFalse(config.transcription.delete_media_after_transcription)
             self.assertFalse(config.feishu.enabled)
             self.assertFalse(config.feishu.include_titles)
+
+    def test_invalid_boolean_string_is_config_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "config.yaml"
+            config_path.write_text(
+                """
+obsidian:
+  vault_path: "vault"
+  output_dir: "得到"
+  filename_pattern: "{column}-{published_date}-{title}.md"
+dedao:
+  columns:
+    - name: "栏目"
+      url: "https://example.com"
+      enabled: "flase"
+summary:
+  enabled: false
+transcription:
+  enabled: false
+feishu:
+  enabled: false
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ConfigError) as raised:
+                load_config(config_path, root_dir=root)
+
+            self.assertIn("dedao.columns[].enabled", str(raised.exception))
 
 
 if __name__ == "__main__":

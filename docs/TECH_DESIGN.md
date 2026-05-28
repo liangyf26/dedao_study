@@ -202,6 +202,7 @@ Obscura 官方仓库描述其为 Rust 编写的 headless browser engine，面向
 - 打开栏目页。
 - 等待主要内容区域加载。
 - 提取内容列表。
+- 栏目列表链接标题优先使用可见文本；当链接文本只是“播放/查看”等短按钮或为空时，回退到 `title`、`aria-label`、`data-title` 和父卡片文本。
 - 打开详情页。
 - 获取页面 HTML、可见文本和必要的网络响应元数据。
 
@@ -211,7 +212,9 @@ Obscura 官方仓库描述其为 Rust 编写的 headless browser engine，面向
 - 清洗无关 UI 文本。
 - 保留段落结构。
 - 判断是否缺少文字稿。
-- 从详情页 HTML 元数据中补全真实标题、作者/讲者和发布时间，优先读取 `og:title`、`author`、`article:published_time`、`time[datetime]`、`h1` 和 `title`。
+- 从详情页 HTML 元数据中补全真实标题、作者/讲者和发布时间，优先读取 `og:title`、`author`、`article:published_time`、`time[datetime]`、JSON-LD 的 `headline/name/author/datePublished`、`h1` 和 `title`。
+- 识别网页正常暴露的媒体候选，包括 `<audio>`、`<video>`、`<source>`、`og:audio`、`og:video` 和 `twitter:player` 元数据；MVP 只记录候选，不下载或转录。
+- 详情页解析后立即执行合规守卫：若 HTML 或媒体候选出现 DRM、加密媒体、Encrypted Media Extensions、加密 HLS key 或 DASH manifest 等信号，状态记为 `policy_blocked`，不写 Markdown，不自动进入 `retry-failed`。
 
 ### 6.2 页面结构适配
 
@@ -262,6 +265,12 @@ ContentDetail(
 
 SQLite 文件：`data/dedao_sync.sqlite3`
 
+迁移策略：
+
+- `migrate()` 必须能重复执行。
+- 新增字段采用向前兼容的 `ALTER TABLE ... ADD COLUMN` 增量迁移。
+- 对旧库新增的 `canonical_url`、`created_at`、`updated_at` 等字段做最小回填，避免升级后去重查询或排序失败。
+
 ### 7.1 items
 
 ```sql
@@ -269,6 +278,7 @@ CREATE TABLE items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   source_url TEXT NOT NULL,
   dedao_id TEXT,
+  canonical_url TEXT,
   column_name TEXT NOT NULL,
   title TEXT NOT NULL,
   published_at TEXT,
@@ -313,6 +323,7 @@ CREATE TABLE runs (
   new_count INTEGER NOT NULL DEFAULT 0,
   skipped_count INTEGER NOT NULL DEFAULT 0,
   success_count INTEGER NOT NULL DEFAULT 0,
+  request_count INTEGER NOT NULL DEFAULT 0,
   failed_count INTEGER NOT NULL DEFAULT 0,
   missing_transcript_count INTEGER NOT NULL DEFAULT 0,
   summary_failed_count INTEGER NOT NULL DEFAULT 0,
@@ -343,6 +354,7 @@ CREATE TABLE run_items (
 - `missing_transcript`
 - `summary_failed`
 - `transcription_failed`
+- `policy_blocked`
 - `failed`
 - `skipped`
 
@@ -351,6 +363,8 @@ CREATE TABLE run_items (
 - 已成功写入 Markdown：`synced`
 - 有全文但摘要失败：`summary_failed`，同时保留 `file_path`、`has_transcript=1` 和 `synced_at`，表示全文已保存但摘要仍需重试。
 - 无网页文字稿且转录未启用：`missing_transcript`
+- 无网页文字稿但存在媒体候选：仍为 `missing_transcript`，错误说明中记录媒体候选数量和类型，作为后续转录线索。
+- 出现 DRM、加密媒体或风控/合规阻断信号：`policy_blocked`
 - 单篇异常：`failed`
 
 `runs.status`：
@@ -386,6 +400,7 @@ class SummaryService:
 - 行动/观察
 - 复习问题
 - 关键词
+- 来源链接
 
 ### 9.1 Prompt 要求
 
@@ -458,8 +473,9 @@ model: deepseek-v4-pro
 
 - 根据栏目创建目录。
 - 清洗文件名非法字符。
-- 避免重名：同名文件追加短 hash。
+- 避免重名：目标文件已存在且内容一致时复用原文件；比较时忽略动态 `sync_time`，避免 DB 更新前中断后重跑生成重复笔记；内容不同时追加短 hash，短 hash 再撞名时继续追加序号。
 - 使用代码内置 renderer 渲染 Markdown，减少 MVP 运行时依赖。
+- 标题、来源、关联、行动、复习问题、关键词等短字段渲染前折叠为单行，避免网页元数据或模型输出中的换行打乱 Markdown 结构；全文稿保持原段落。
 - 写入成功后返回绝对路径。
 
 Windows 非法字符：
@@ -538,6 +554,7 @@ class Notifier:
 - 通知失败写入日志。
 - `notify-test` 命令用于验证 webhook、secret 和网络可用性。
 - 通知不发送全文稿；对 `missing_transcript`/`extractor_failed` 和 `summary_failed` 提供按栏目分组的标题明细，方便从每日通知直接定位后续动作。
+- 通知明细按类别限制展示数量，超过限制时必须显示剩余条数和查看日志/`list` 命令的提示，避免飞书消息过长但又静默隐藏问题规模。
 - 若 `feishu.include_titles: false`，通知只发送计数、状态和日志路径，不发送新增/失败条目标题或失败明细。
 - 若 `feishu.enabled: false`，即使环境变量中存在 webhook，也不发送飞书通知。
 
@@ -560,6 +577,7 @@ dedao-sync sync --dry-run
 dedao-sync sync --column "长谈"
 dedao-sync retry-failed
 dedao-sync resummarize
+dedao-sync resummarize --all
 dedao-sync summary-test
 dedao-sync notify-test
 dedao-sync list
@@ -573,18 +591,22 @@ dedao-sync list --status extractor_failed
 
 - `login`：打开浏览器，保存登录态。
 - `preflight`：验证配置、vault、登录态、Playwright 依赖；可用 `--no-browser` 只检查非浏览器条件，可用 `--probe-vault-write` 显式测试 Obsidian 输出目录可写。
+- 浏览器依赖检查不仅验证 `playwright` Python 包，也验证 Chromium executable 是否存在，避免漏跑 `playwright install chromium` 后到抓取时才失败。
 - `check`：只检查新内容，不写 Markdown，不写入新条目去重库，不发送飞书通知。
 - `sync`：完整同步。
 - `sync --dry-run`：演练登录、预检查、栏目列表发现和去重判断，但不抓详情、不摘要、不写 Markdown、不发送飞书通知；用于改配置、改栏目列表选择器后的手动验证。
+- 正式 `sync`、`retry-failed` 和 `resummarize` 在 `feishu.enabled: true` 时要求 webhook 环境变量存在；如果希望本次部署不发通知，需要显式设置 `feishu.enabled: false`。`check` 和 `sync --dry-run` 不发送通知，也不强制要求 webhook。
+- `preflight` 和 `doctor` 会检查摘要 base URL 与飞书 webhook 是否是 `http(s)` URL。摘要 URL 格式错误给出 warning，避免阻断全文保存；正式需要发送飞书通知时，webhook URL 格式错误会作为 error 阻断运行，避免日报静默丢失。
 - `sync --column`：只同步指定栏目；如果栏目名没有匹配任何启用栏目，返回 `preflight_failed`，避免静默空跑。
-- `retry-failed`：重试失败类条目，包括 `failed`、`extractor_failed`、`missing_transcript`、`summary_failed`、`transcription_failed`。对于已有 `file_path` 的 `summary_failed`，优先从原笔记提取全文并覆盖原文件补摘要，避免重复创建 Markdown。
+- `retry-failed`：重试可恢复失败类条目，包括 `failed`、`extractor_failed`、`missing_transcript`、`summary_failed`、`transcription_failed`。对于已有 `file_path` 的 `summary_failed`，优先从原笔记提取全文并覆盖原文件补摘要，避免重复创建 Markdown。`policy_blocked` 只进入人工排查列表，不自动重试。
 - `resummarize`：重新生成摘要。
+- `resummarize --all`：刷新所有已有全文稿的摘要，用于 prompt、模型或摘要结构调整后的显式批量重算；默认 `resummarize` 只处理摘要缺失或失败的条目。
 - `summary-test`：用本地样本文稿验证摘要 API、模型返回和解析器。
 - `notify-test`：发送测试飞书消息。
 - `list`：列出同步记录。
-- `list --runs`：列出最近执行历史、计数和日志路径。
+- `list --runs`：列出最近执行历史、发现/新增/跳过/成功/网页请求/失败/无文字稿/摘要失败计数和日志路径。
 - `list --run-id`：列出某次执行记录的条目动作和状态。
-- `list --failed`：列出需要处理或重试的失败类条目。
+- `list --failed`：列出需要处理或重试的失败类条目，包括需要人工判断的 `policy_blocked`。
 - `list --status`：按指定状态筛选条目，可重复传入。
 
 ## 14. 自动化部署
@@ -596,6 +618,8 @@ dedao-sync list --status extractor_failed
 ```powershell
 dedao-sync sync
 ```
+
+仓库提供 `scripts/run_dedao_sync.ps1` 作为任务计划入口。该 wrapper 会切换到项目根目录，优先调用 `.venv\Scripts\dedao-sync.exe`，缺失时回退到 `py -m dedao_sync.cli`，并把 PowerShell 层面的启动、配置文件、退出码写入 `logs/scheduled-YYYY-MM-DD.log`，覆盖 Python 日志尚未初始化时的早期失败。
 
 前置条件：
 
@@ -613,6 +637,8 @@ dedao-sync.service
 dedao-sync.timer
 ```
 
+仓库提供 `templates/systemd/dedao-sync.service` 和 `templates/systemd/dedao-sync.timer` 作为 user service 模板，并在 `docs/DEBIAN_DEPLOY.md` 中记录安装、验证、日志和卸载步骤。模板默认项目路径为 `~/dedao-sync`，迁移时应按实际 vault 和项目路径调整。
+
 迁移重点：
 
 - Playwright headless/headful + Xvfb 方案。
@@ -626,7 +652,9 @@ dedao-sync.timer
 
 - 控制台输出简洁进度。
 - 文件日志保存详细信息。
-- 每日一个日志文件。
+- 每日一个日志文件，日期按 `Asia/Shanghai` 计算，避免 Debian 主机时区不同导致跨日错位。
+- 每次运行记录网页请求数；`list --runs` 和飞书通知都显示该计数，用于观察是否出现异常访问频率。
+- 面向用户展示的运行时间、飞书通知时间、Markdown `sync_time` 和失败快照时间戳均固定使用 `Asia/Shanghai`；若 Python 环境缺少 IANA `tzdata`，程序回退到固定 UTC+08，避免启动失败。SQLite 内部条目的 `created_at`/`updated_at` 继续使用 UTC，便于跨机器审计。
 
 日志字段：
 
@@ -666,8 +694,9 @@ dedao-sync.timer
 
 - 只访问用户本人会员/购买后可见内容。
 - 不绕过验证码、风控、DRM 或加密媒体。
+- 代码层 `policy` guard 会阻断 DRM、Encrypted Media Extensions、加密 HLS key、DASH manifest 等信号，避免后续误把受保护媒体纳入下载或转录流程。
 - 不实现公开分享、批量外传或内容再发布。
-- 请求保持低频，默认串行。
+- 请求保持低频，默认串行；每次页面等待在基础间隔上增加小幅随机抖动，避免固定机械节奏。
 - 遇到访问限制时停止，不尝试规避。
 
 ## 18. 分阶段实施
@@ -722,7 +751,7 @@ Phase 1 进入开发前采用以下修正：
 
 - MVP 只做 Windows 本地网页文字稿同步，不做转录，不迁移 Debian。
 - 增加 `PreflightChecker`，在同步前检查配置、vault 路径、数据库、登录态、飞书配置。
-- `PreflightChecker` 会检查配置语义：至少一个启用栏目、栏目名不重复、栏目 URL 合法、请求间隔非负、摘要 provider 受支持、文件名模板包含必需字段。
+- `PreflightChecker` 会检查配置语义：至少一个启用栏目、栏目名不重复、栏目 URL 合法、请求间隔非负、摘要 provider 受支持、Obsidian 输出目录必须是 vault 内部相对路径、文件名模板只使用并且必须包含 `{column}`、`{published_date}`、`{title}`；项目目录内的敏感运行路径必须落在 `.gitignore` 覆盖的默认 `data/...` 目录中。
 - `doctor` 复用同一套配置语义检查，并在 JSON 输出中给出 `config_semantics` 项，便于定时任务或外部监控判断配置是否已坏。
 - `PreflightChecker` 默认不写入 vault；需要确认目标目录可写时，可显式启用写入探针，创建并删除 Obsidian 输出目录中的临时文件。
 - 每次运行必须创建 `runs` 记录，不能只依赖日志文件。
@@ -730,7 +759,7 @@ Phase 1 进入开发前采用以下修正：
 - 栏目页解析为空时不直接视为成功，需要区分“确实无更新”和“解析失败”。
 - 正文提取必须通过质量门槛，包括最小长度、最小段落数、标题相关性、UI 噪声比例。
 - 正文质量门槛失败时标记 `extractor_failed`，不写 Markdown。
-- Markdown frontmatter 使用 YAML serializer，不手写拼接。
+- Markdown frontmatter 使用内置 YAML-safe scalar renderer，统一转义引号、反斜杠、换行和控制字符，避免标题或栏目名破坏 frontmatter。
 - Markdown 写入采用临时文件 + 原子移动，写入成功后再更新 DB。
 - 去重使用 `source_url`、canonical URL、栏目内 `dedao_id`、`content_hash` 多重判断。
 - 飞书通知只发运行摘要和标题，不发送全文。
@@ -752,3 +781,4 @@ Phase 1 进入开发前采用以下修正：
 - 飞书失败不能影响主流程。
 - 摘要失败不能影响全文保存。
 - 定时任务和手动运行不能并发写入；`sync`、`retry-failed`、`resummarize` 使用项目级运行锁。
+- 每次网页登录检查、栏目列表访问和详情页访问都计入 `request_count`，用于验证默认串行、低频访问策略。

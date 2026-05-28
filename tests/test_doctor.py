@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from dedao_sync.doctor import doctor_checks_to_dicts, doctor_exit_code, run_doctor
 
@@ -133,6 +134,108 @@ class DoctorTests(unittest.TestCase):
             self.assertTrue(any("request_interval_seconds" in message for message in semantic_errors))
             self.assertTrue(any("filename_pattern missing fields" in message for message in semantic_errors))
             self.assertEqual(doctor_exit_code(checks), 1)
+
+    def test_doctor_reports_unsupported_filename_pattern_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(
+                root,
+                overrides={
+                    "obsidian": {"filename_pattern": "{column}-{published_date}-{title}-{dedao_id}.md"},
+                },
+            )
+
+            checks = run_doctor(config_path, require_auth=False)
+
+            semantic_errors = [check.message for check in checks if check.name == "config_semantics" and check.status == "error"]
+            self.assertTrue(any("filename_pattern unsupported fields: dedao_id" in message for message in semantic_errors))
+            self.assertEqual(doctor_exit_code(checks), 1)
+
+    def test_doctor_reports_output_dir_outside_vault(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(
+                root,
+                overrides={
+                    "obsidian": {"output_dir": str(root / "outside-vault")},
+                },
+            )
+
+            checks = run_doctor(config_path, require_auth=False)
+
+            semantic_errors = [check.message for check in checks if check.name == "config_semantics" and check.status == "error"]
+            self.assertTrue(any("obsidian.output_dir must be relative" in message for message in semantic_errors))
+            self.assertEqual(doctor_exit_code(checks), 1)
+
+    def test_doctor_reports_sensitive_runtime_path_inside_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(
+                root,
+                overrides={
+                    "dedao": {"auth_state_path": "dedao_state.json"},
+                },
+            )
+
+            checks = run_doctor(config_path, require_auth=False)
+
+            semantic_errors = [check.message for check in checks if check.name == "config_semantics" and check.status == "error"]
+            self.assertTrue(any("dedao.auth_state_path inside project must stay under" in message for message in semantic_errors))
+            self.assertEqual(doctor_exit_code(checks), 1)
+
+    def test_doctor_reports_playwright_chromium_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp))
+
+            with mock.patch(
+                "dedao_sync.doctor.check_playwright_chromium",
+                return_value=(False, "Playwright Chromium executable is missing"),
+            ):
+                checks = run_doctor(config_path, require_auth=False)
+
+            by_name = {check.name: check for check in checks}
+            self.assertEqual(by_name["dep:playwright_chromium"].status, "warn")
+            self.assertIn("Chromium executable", by_name["dep:playwright_chromium"].message)
+
+    def test_doctor_reports_invalid_env_urls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(
+                root,
+                overrides={
+                    "summary": {"enabled": True, "base_url_env": "SUMMARY_BASE_URL_TEST"},
+                    "feishu": {"enabled": True, "webhook_url_env": "FEISHU_WEBHOOK_URL_TEST"},
+                },
+            )
+
+            with mock.patch.dict(
+                "os.environ",
+                {
+                    "SUMMARY_BASE_URL_TEST": "api.example.com",
+                    "BASE": "https://unused.example.com",
+                    "KEY": "sk-test",
+                    "FEISHU_WEBHOOK_URL_TEST": "not-a-url",
+                },
+            ):
+                checks = run_doctor(config_path, require_auth=False)
+
+            by_name = {check.name: check for check in checks}
+            self.assertEqual(by_name["env:SUMMARY_BASE_URL_TEST"].status, "warn")
+            self.assertEqual(by_name["env:SUMMARY_BASE_URL_TEST"].message, "invalid URL")
+            self.assertEqual(by_name["env:FEISHU_WEBHOOK_URL_TEST"].status, "warn")
+            self.assertEqual(by_name["env:FEISHU_WEBHOOK_URL_TEST"].message, "invalid URL")
+
+    def test_doctor_treats_pyyaml_as_optional(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(Path(tmp))
+
+            with mock.patch("dedao_sync.doctor._check_import", side_effect=lambda name: False):
+                checks = run_doctor(config_path, require_auth=False)
+
+            by_name = {check.name: check for check in checks}
+            self.assertEqual(by_name["dep:pyyaml"].status, "ok")
+            self.assertIn("built-in limited YAML parser", by_name["dep:pyyaml"].message)
+            self.assertEqual(by_name["dep:playwright"].status, "warn")
 
 
 if __name__ == "__main__":

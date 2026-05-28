@@ -78,6 +78,8 @@ feishu:
   enabled: false
 ```
 
+如果 `feishu.enabled: true`，正式 `sync`、`retry-failed` 和 `resummarize` 会把缺少 webhook 环境变量视为预检查失败，避免任务表面运行成功但你收不到结果。`check` 和 `sync --dry-run` 不发送通知，也不强制要求 webhook。
+
 ## 5. 首次登录
 
 ```powershell
@@ -151,6 +153,8 @@ dedao:
 
 `--json` 会输出 `has_transcript`、`quality_reason`、`transcript_chars`、正文候选诊断和条目候选列表，适合把四个真实栏目快照的解析结果保存下来做回归比较。
 
+如果详情页中有网页正常暴露的 `<audio>`、`<video>`、`<source>` 或 `og:audio`/`og:video` 元数据，`parse-snapshot --json` 也会输出 `media_candidates`。当前版本只记录候选 URL、MIME 类型和来源标签，不下载媒体、不绕过播放器或加密流。
+
 `inspect-page` 会同时保存：
 
 - `.html`：页面 HTML
@@ -175,13 +179,21 @@ dedao:
 .venv\Scripts\dedao-sync.exe sync --config config.yaml --dry-run
 ```
 
-`preflight` 默认会检查 Playwright 是否已安装。如果只是验证配置文件和 vault 路径，可以临时加 `--no-browser`。如需确认 Obsidian 输出目录可写，可额外加 `--probe-vault-write`，它会创建并删除一个临时探针文件；同步盘较慢时不建议把该选项放进每日定时任务。
+`preflight` 默认会检查 Playwright Python 包和 Chromium 浏览器 executable 是否都已安装。如果只是验证配置文件和 vault 路径，可以临时加 `--no-browser`。如需确认 Obsidian 输出目录可写，可额外加 `--probe-vault-write`，它会创建并删除一个临时探针文件；同步盘较慢时不建议把该选项放进每日定时任务。
+
+`doctor` 会分别显示 `dep:playwright` 和 `dep:playwright_chromium`。前者缺失时需要安装项目依赖，后者缺失时通常需要执行 `playwright install chromium`。
 
 `check` 是手动检查命令，只访问栏目列表并统计新内容；它不会写 Markdown、不会把新条目写入去重库，也不会发送飞书通知。`sync --dry-run` 也不会写 Markdown 或发送飞书通知，适合在改配置、改栏目列表选择器后演练发现和去重流程。
 
 当前版本还没有真正接入转录引擎。请保持 `transcription.enabled: false`；如果改成 `true`，`preflight` 会失败，避免误以为无文字稿内容已经能自动转录。
 
-`doctor` 和 `preflight` 都会检查栏目配置和文件命名模板：至少一个栏目启用、栏目名不重复、栏目 URL 是 `http(s)`、请求间隔非负、`summary.provider` 是当前支持的 `opencode_go`，以及 `filename_pattern` 包含 `{column}`、`{published_date}`、`{title}`。
+当某篇内容没有网页文字稿但页面里存在媒体候选时，失败记录和 `list --failed` / `list --run-id` 会显示 `media_candidates=<数量>` 以及最多前三种候选类型，作为后续转录排查线索。
+
+`doctor` 和 `preflight` 都会检查栏目配置和文件命名模板：至少一个栏目启用、栏目名不重复、栏目 URL 是 `http(s)`、请求间隔非负、`summary.provider` 是当前支持的 `opencode_go`，`obsidian.output_dir` 必须是 vault 内部的相对路径，以及 `filename_pattern` 只使用并且必须包含 `{column}`、`{published_date}`、`{title}`。
+
+如果登录态、浏览器 profile、失败 HTML 快照或媒体缓存路径配置在项目目录内，它们必须保留在默认的 `data/auth/`、`data/browser_profile/`、`data/page_failures/`、`data/media_cache/` 下。这些目录已加入 `.gitignore`；若确实要改到其他位置，建议放到项目目录外。
+
+抓取流程默认串行执行。`dedao.request_interval_seconds` 是基础等待时间，crawler 会在此基础上加小幅随机抖动，避免固定机械访问节奏。
 
 正式同步：
 
@@ -195,12 +207,18 @@ dedao:
 .venv\Scripts\dedao-sync.exe retry-failed --config config.yaml
 ```
 
-`retry-failed` 会处理 `failed`、`extractor_failed`、`missing_transcript`、`summary_failed` 和 `transcription_failed`。如果 `summary_failed` 条目已有 `file_path` 且全文仍在原笔记中，命令会原地覆盖补摘要，不会创建第二份 Markdown。
+`retry-failed` 会处理 `failed`、`extractor_failed`、`missing_transcript`、`summary_failed` 和 `transcription_failed`。如果 `summary_failed` 条目已有 `file_path` 且全文仍在原笔记中，命令会原地覆盖补摘要，不会创建第二份 Markdown。`policy_blocked` 只会出现在 `list --failed` 中，需人工判断，不会自动重试。
 
 重跑摘要：
 
 ```powershell
 .venv\Scripts\dedao-sync.exe resummarize --config config.yaml
+```
+
+默认只处理摘要缺失或摘要失败的笔记。如果调整了摘要 prompt、模型或输出格式，需要刷新所有已有全文稿笔记，可显式运行：
+
+```powershell
+.venv\Scripts\dedao-sync.exe resummarize --config config.yaml --all
 ```
 
 摘要服务测试：
@@ -239,9 +257,11 @@ dedao:
 
 如果通知失败，命令会返回非零并输出 `notification failed: ...`。常见原因包括当前终端不能访问外网、webhook/secret 配置错误，或飞书机器人安全策略未放行。
 
-飞书通知只发送运行摘要、标题列表、失败摘要和日志路径，不发送全文稿。通知中会包含运行机器、执行时间、耗时、总栏目数、新增/跳过/失败/无文字稿/摘要失败计数，并按栏目列出无文字稿/待处理条目和摘要失败条目。若 `feishu.include_titles: false`，通知会隐藏这些条目标题和失败明细，只保留计数与日志路径。
+飞书通知只发送运行摘要、标题列表、失败摘要和日志路径，不发送全文稿。通知中会包含运行机器、执行时间、耗时、总栏目数、新增/跳过/失败/无文字稿/摘要失败计数，并按栏目列出无文字稿/待处理条目和摘要失败条目。为避免消息过长，每类明细最多展示前 10 条；如果还有更多条目，会显示剩余数量并提示用日志或 `list` 命令查看。若 `feishu.include_titles: false`，通知会隐藏这些条目标题和失败明细，只保留计数与日志路径。
 
-如果飞书通知遗漏或定时任务静默失败，优先用 `list --runs` 查看最近执行状态，再根据输出中的 `log=` 路径打开对应日志。若某次执行是 `partial_failed`，可用 `list --run-id <id>` 查看该次执行的条目动作，也可用 `list --failed` 查看仍需处理的失败类条目。
+如果飞书通知遗漏或定时任务静默失败，优先用 `list --runs` 查看最近执行状态和 `requests=` 网页请求数，再根据输出中的 `log=` 路径打开对应日志。若某次执行是 `partial_failed`，可用 `list --run-id <id>` 查看该次执行的条目动作，也可用 `list --failed` 查看仍需处理的失败类条目。
+
+`list --runs` 会直接显示 `skipped=`、`requests=`、`missing=` 和 `summary_failed=` 等计数；看到非 0 值时，通常下一步就是查看同一行的 `log=` 或用 `list --run-id <id>` 追到具体条目。
 
 ## 8. Windows 定时任务
 
@@ -253,4 +273,4 @@ docs/SCHEDULING.md
 
 ## 9. 当前环境记录
 
-本仓库当前已创建 `.venv`，但依赖安装在当前沙箱环境中被网络权限拦截。失败信息是 pip 无法连接包索引。后续在允许网络访问的终端中重新执行第 3 步即可。
+本仓库当前已创建 `.venv`，但依赖安装在当前 Codex 运行环境中被 Windows OS 740 提权错误拦截，普通 pip 网络访问也可能被权限策略拦截。后续需要在具备相应权限的 PowerShell 中重新执行第 3 步，并随后运行 `doctor` 确认 `dep:playwright` 和 `dep:playwright_chromium` 均为 `ok`。`dep:pyyaml` 是可选项；未安装时会使用项目内置的有限 YAML 解析器。

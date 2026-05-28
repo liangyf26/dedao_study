@@ -55,9 +55,15 @@ dedao-sync login
 playwright install chromium
 ```
 
+PyYAML 不是 MVP 必需依赖；项目内置了覆盖当前配置模板的有限 YAML 解析器。若后续希望使用更复杂的 YAML 写法，可安装 `dedao-sync[yaml]`。
+
 更完整的本地运行步骤见 [RUNTIME_SETUP.md](D:/Project/603_dedao_study/docs/RUNTIME_SETUP.md)。
 
 Windows 定时任务设置见 [SCHEDULING.md](D:/Project/603_dedao_study/docs/SCHEDULING.md)。
+
+定时任务 wrapper 会额外写 `logs/scheduled-YYYY-MM-DD.log`，用于排查 Python 启动前的任务计划失败、虚拟环境路径错误或工作目录异常。
+
+Debian systemd 常驻部署准备说明见 [DEBIAN_DEPLOY.md](D:/Project/603_dedao_study/docs/DEBIAN_DEPLOY.md)。建议 Windows MVP 连续稳定运行 7 天后再迁移。
 
 常用命令：
 
@@ -72,6 +78,7 @@ dedao-sync sync --config config.yaml --dry-run
 dedao-sync sync --config config.yaml
 dedao-sync retry-failed --config config.yaml
 dedao-sync resummarize --config config.yaml
+dedao-sync resummarize --config config.yaml --all
 dedao-sync summary-test --config config.yaml
 dedao-sync list --config config.yaml --runs
 dedao-sync list --config config.yaml --run-id 1
@@ -87,7 +94,11 @@ dedao-sync notify-test --config config.yaml
 
 `parse-snapshot --show-candidates` 可以离线查看正文候选的质量评分，帮助判断真实页面解析失败的原因。`parse-snapshot --show-items` 可以查看栏目页中被识别为内容条目的链接。`parse-snapshot --json` 会输出机器可读的解析报告，方便保存真实快照的回归基线。
 
-`list --runs` 会列出最近几次执行的状态、发现/新增/成功/失败计数和日志路径，用于排查每日定时任务结果。
+详情页解析会识别网页中正常暴露的音频/视频候选，例如 `<audio>`、`<video>`、`<source>` 和 `og:audio`/`og:video` 元数据。MVP 不下载媒体也不转录，但无文字稿记录会包含媒体候选数量和类型，方便后续接入转录。
+
+如果页面或媒体候选出现 DRM、加密媒体或加密流信号，程序会记录为 `policy_blocked`，不写入 Obsidian，也不会自动重试。这类条目可用 `dedao-sync list --failed` 查看后人工判断。
+
+`list --runs` 会列出最近几次执行的状态、发现/新增/跳过/成功/网页请求/失败/无文字稿/摘要失败计数和日志路径，用于排查每日定时任务结果。
 
 `list --run-id <id>` 会列出某次执行里每篇内容的动作、状态和错误/文件路径，用于从一条 `partial_failed` 运行追到具体条目。
 
@@ -95,14 +106,16 @@ dedao-sync notify-test --config config.yaml
 
 `preflight` 和 `doctor` 不只检查登录态文件是否存在，也会检查它是否是有效的 Playwright `storage_state` JSON，并且包含 cookies 或 origins。空文件、坏 JSON 或 `{}` 会提示重新运行 `dedao-sync login`。
 
-`list --failed` 会列出需要处理或重试的条目，包括 `failed`、`extractor_failed`、`missing_transcript`、`summary_failed` 和 `transcription_failed`。
+`list --failed` 会列出需要处理或重试的条目，包括 `failed`、`extractor_failed`、`missing_transcript`、`summary_failed`、`transcription_failed` 和需要人工判断的 `policy_blocked`。
 
-`retry-failed` 会重试上述失败类条目；对已有 `file_path` 的 `summary_failed` 条目会原地覆盖补摘要，不会创建第二份笔记。后续转录模块接入后，`transcription_failed` 也会进入同一恢复路径。
+`retry-failed` 会重试可恢复的失败类条目；对已有 `file_path` 的 `summary_failed` 条目会原地覆盖补摘要，不会创建第二份笔记。后续转录模块接入后，`transcription_failed` 也会进入同一恢复路径。`policy_blocked` 不会自动重试。
+
+`resummarize` 默认只处理摘要缺失或失败的笔记；当你调整摘要 prompt 或模型后，可用 `resummarize --all` 刷新所有已有全文稿的摘要。
 
 `summary-test` 会用一段本地样本文稿调用摘要模型，验证 OpenCode GO/DeepSeek 配置、网络和返回格式是否可用。
 
 `summary_failed` 不代表全文同步失败；如果 `file_path`、`has_transcript=1` 和 `synced_at` 存在，说明正文已写入 Obsidian，只需要后续 `resummarize` 或 `retry-failed` 补摘要。
 
-飞书通知不会发送全文；除了计数和新增标题，也会列出无文字稿/待处理条目和摘要失败条目，方便从通知直接定位后续动作。若设置 `feishu.include_titles: false`，通知会隐藏条目标题和失败明细，只保留计数与日志路径。
+飞书通知不会发送全文；除了计数和新增标题，也会列出无文字稿/待处理条目和摘要失败条目，方便从通知直接定位后续动作。若设置 `feishu.include_titles: false`，通知会隐藏条目标题和失败明细，只保留计数与日志路径。若 `feishu.enabled: true`，正式 `sync`、`retry-failed` 和 `resummarize` 会要求 webhook 环境变量存在；`check` 和 `sync --dry-run` 不发送通知，也不强制要求 webhook。
 
-当前构建尚未接入真实转录引擎，`transcription.enabled` 需要保持 `false`；设为 `true` 会让 `preflight` 失败。
+当前构建尚未接入真实转录引擎，`transcription.enabled` 需要保持 `false`；设为 `true` 会让 `preflight` 失败。媒体候选只作为后续转录线索记录，不代表已经下载或处理媒体文件。

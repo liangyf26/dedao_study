@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
+from urllib.parse import urljoin, urlparse
 
-from .models import ContentDetail, ContentItem
+from .models import ContentDetail, ContentItem, MediaCandidate
+from .policy import check_page_policy
 
 
 UI_NOISE_PATTERNS = (
@@ -34,6 +37,8 @@ PUBLISHED_META_KEYS = {
     "publish_time",
     "published_time",
 }
+
+MEDIA_META_PREFIXES = ("og:audio", "og:video", "twitter:player")
 
 
 def _clean_visible_text(text: str) -> str:
@@ -134,6 +139,7 @@ class MetadataParser(HTMLParser):
         self._capture: str | None = None
         self._title_parts: list[str] = []
         self._h1_parts: list[str] = []
+        self._jsonld_parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs):
         attrs_dict = {str(key).lower(): str(value) for key, value in attrs if value is not None}
@@ -159,7 +165,9 @@ class MetadataParser(HTMLParser):
             timestamp = attrs_dict.get("datetime") or attrs_dict.get("content")
             if timestamp:
                 self.published_at = timestamp.strip()
-        if tag in {"title", "h1"}:
+        if tag == "script" and "ld+json" in attrs_dict.get("type", "").lower():
+            self._capture = "jsonld"
+        elif tag in {"title", "h1"}:
             self._capture = tag
 
     def handle_endtag(self, tag: str):
@@ -171,15 +179,101 @@ class MetadataParser(HTMLParser):
             if not self.title:
                 self.title = _clean_title(" ".join(self._h1_parts))
             self._capture = None
+        elif tag == "script" and self._capture == "jsonld":
+            self._merge_jsonld_metadata(" ".join(self._jsonld_parts))
+            self._jsonld_parts = []
+            self._capture = None
 
     def handle_data(self, data: str):
         text = data.strip()
         if not text:
             return
-        if self._capture == "title":
+        if self._capture == "jsonld":
+            self._jsonld_parts.append(text)
+        elif self._capture == "title":
             self._title_parts.append(text)
         elif self._capture == "h1":
             self._h1_parts.append(text)
+
+    def _merge_jsonld_metadata(self, text: str) -> None:
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return
+        for obj in _iter_jsonld_objects(payload):
+            if not isinstance(obj, dict):
+                continue
+            if not self.title:
+                title = obj.get("headline") or obj.get("name")
+                if title:
+                    self.title = _clean_title(str(title))
+            if not self.author:
+                author = _jsonld_author_name(obj.get("author") or obj.get("creator"))
+                if author:
+                    self.author = author
+            if not self.published_at:
+                published = obj.get("datePublished") or obj.get("dateModified") or obj.get("uploadDate")
+                if published:
+                    self.published_at = str(published).strip()
+
+
+def _iter_jsonld_objects(value):
+    if isinstance(value, list):
+        for item in value:
+            yield from _iter_jsonld_objects(item)
+    elif isinstance(value, dict):
+        yield value
+        graph = value.get("@graph")
+        if isinstance(graph, list):
+            for item in graph:
+                yield from _iter_jsonld_objects(item)
+
+
+def _jsonld_author_name(value) -> str | None:
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        name = value.get("name")
+        return str(name).strip() if name else None
+    if isinstance(value, list):
+        names = [name for item in value if (name := _jsonld_author_name(item))]
+        return "，".join(names) if names else None
+    return None
+
+
+class MediaCandidateParser(HTMLParser):
+    def __init__(self, base_url: str):
+        super().__init__()
+        self.base_url = base_url
+        self.candidates: list[MediaCandidate] = []
+        self._seen: set[str] = set()
+
+    def handle_starttag(self, tag: str, attrs):
+        attrs_dict = {str(key).lower(): str(value) for key, value in attrs if value is not None}
+        if tag in {"audio", "video", "source"}:
+            self._add(
+                attrs_dict.get("src"),
+                mime_type=attrs_dict.get("type"),
+                label=tag,
+            )
+            return
+        if tag == "meta":
+            key = (attrs_dict.get("property") or attrs_dict.get("name") or "").lower()
+            if not key.startswith(MEDIA_META_PREFIXES):
+                return
+            self._add(attrs_dict.get("content"), label=key)
+
+    def _add(self, raw_url: str | None, *, mime_type: str | None = None, label: str | None = None) -> None:
+        if not raw_url:
+            return
+        absolute = urljoin(self.base_url, raw_url.strip())
+        parsed = urlparse(absolute)
+        if parsed.scheme not in {"http", "https"}:
+            return
+        if absolute in self._seen:
+            return
+        self._seen.add(absolute)
+        self.candidates.append(MediaCandidate(url=absolute, mime_type=mime_type, label=label))
 
 
 @dataclass(frozen=True)
@@ -197,6 +291,12 @@ def extract_metadata(html: str) -> ExtractedMetadata:
         author=parser.author or None,
         published_at=parser.published_at or None,
     )
+
+
+def extract_media_candidates(html: str, base_url: str) -> tuple[MediaCandidate, ...]:
+    parser = MediaCandidateParser(base_url)
+    parser.feed(html)
+    return tuple(parser.candidates)
 
 
 def html_to_candidate_texts(html: str) -> list[str]:
@@ -251,11 +351,23 @@ class TranscriptExtractor:
 
     def from_html(self, item: ContentItem, html: str) -> ContentDetail:
         item = self._merge_metadata(item, extract_metadata(html))
+        media_candidates = extract_media_candidates(html, item.detail_url or item.source_url)
         text, quality = self.select_best_candidate(item, html_to_candidate_texts(html))
+        policy = check_page_policy(html, media_candidates)
+        if not policy.allowed:
+            return ContentDetail(
+                item=item,
+                transcript_text="",
+                has_transcript=False,
+                media_candidates=media_candidates,
+                raw_html_hash=hashlib.sha256(html.encode("utf-8")).hexdigest(),
+                quality_reason=f"policy_blocked:{policy.reason}",
+            )
         return ContentDetail(
             item=item,
             transcript_text=text if quality.ok else "",
             has_transcript=quality.ok,
+            media_candidates=media_candidates,
             raw_html_hash=hashlib.sha256(html.encode("utf-8")).hexdigest(),
             quality_reason=quality.reason,
         )

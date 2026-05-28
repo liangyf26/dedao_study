@@ -10,11 +10,11 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 
 from .models import FeishuConfig, RunReport
 from .security import redact
+from .time_utils import now_local
 
 
 STATUS_TITLES = {
@@ -24,6 +24,8 @@ STATUS_TITLES = {
     "login_required": "得到同步失败：需要重新登录",
     "preflight_failed": "得到同步失败：预检查未通过",
 }
+
+MAX_DETAIL_LINES_PER_SECTION = 10
 
 
 @dataclass(frozen=True)
@@ -53,7 +55,7 @@ def load_feishu_credentials(config: FeishuConfig) -> FeishuCredentials | None:
 
 
 def format_run_report(report: RunReport, *, include_titles: bool = True) -> str:
-    finished = report.finished_at or datetime.now()
+    finished = report.finished_at or now_local()
     duration = ""
     if report.finished_at:
         seconds = max(0, int((report.finished_at - report.started_at).total_seconds()))
@@ -70,6 +72,7 @@ def format_run_report(report: RunReport, *, include_titles: bool = True) -> str:
         f"新增文章数：{report.new_count}",
         f"跳过文章数：{report.skipped_count}",
         f"成功文章数：{report.success_count}",
+        f"网页请求数：{report.request_count}",
         f"失败文章数：{report.failed_count}",
         f"无文字稿文章数：{report.missing_transcript_count}",
         f"摘要失败数：{report.summary_failed_count}",
@@ -79,26 +82,34 @@ def format_run_report(report: RunReport, *, include_titles: bool = True) -> str:
         lines.extend(["", "明细：已按配置隐藏标题；请在本机用 list --runs / list --failed 查看。"])
     if include_titles and report.added_by_column:
         lines.extend(["", "新增内容："])
-        for column, titles in report.added_by_column.items():
-            for title in titles[:10]:
-                lines.append(f"- {column}：{redact(title)}")
+        _append_bucket_lines(lines, report.added_by_column)
     if include_titles and report.missing_by_column:
         lines.extend(["", "无文字稿/待处理："])
-        for column, titles in report.missing_by_column.items():
-            for title in titles[:10]:
-                lines.append(f"- {column}：{redact(title)}")
+        _append_bucket_lines(lines, report.missing_by_column)
     if include_titles and report.summary_failed_by_column:
         lines.extend(["", "摘要失败："])
-        for column, titles in report.summary_failed_by_column.items():
-            for title in titles[:10]:
-                lines.append(f"- {column}：{redact(title)}")
+        _append_bucket_lines(lines, report.summary_failed_by_column)
     if include_titles and report.failures:
         lines.extend(["", "失败："])
-        for failure in report.failures[:10]:
+        for failure in report.failures[:MAX_DETAIL_LINES_PER_SECTION]:
             lines.append(f"- {redact(failure)}")
+        if len(report.failures) > MAX_DETAIL_LINES_PER_SECTION:
+            lines.append(f"- 还有 {len(report.failures) - MAX_DETAIL_LINES_PER_SECTION} 条，详见日志或 list 命令。")
     if report.log_path:
         lines.extend(["", f"日志：{report.log_path}"])
     return "\n".join(lines)
+
+
+def _append_bucket_lines(lines: list[str], bucket: dict[str, list[str]]) -> None:
+    emitted = 0
+    total = sum(len(titles) for titles in bucket.values())
+    for column, titles in bucket.items():
+        for title in titles:
+            if emitted >= MAX_DETAIL_LINES_PER_SECTION:
+                lines.append(f"- 还有 {total - emitted} 条，详见日志或 list 命令。")
+                return
+            lines.append(f"- {column}：{redact(title)}")
+            emitted += 1
 
 
 class FeishuNotifier:
@@ -134,6 +145,12 @@ class FeishuNotifier:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                 body = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            try:
+                error_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                error_body = str(exc)
+            raise NotificationError(f"feishu HTTP {exc.code}: {redact(error_body)[:500]}") from exc
         except urllib.error.URLError as exc:
             raise NotificationError(redact(exc)) from exc
         try:

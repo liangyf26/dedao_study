@@ -1,0 +1,14 @@
+[Unit]
+Description=Sync Dedao transcripts into Obsidian
+Documentation=file:%h/dedao-sync/docs/DEBIAN_DEPLOY.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/dedao-sync
+EnvironmentFile=%h/dedao-sync/.env
+ExecStart=%h/dedao-sync/.venv/bin/dedao-sync sync --config %h/dedao-sync/config.yaml
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
