@@ -21,21 +21,28 @@ class AnchorParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs):
         attrs_dict = dict(attrs)
         self._stack.append({"tag": tag, "attrs": attrs_dict, "text_parts": []})
-        if tag != "a":
+        href = self._candidate_href(tag, attrs_dict)
+        if not href:
             return
-        href = attrs_dict.get("href")
-        if href:
-            self._current_anchor = {
-                "href": urljoin(self.base_url, href),
-                "title": (attrs_dict.get("title") or "").strip(),
-                "aria_label": (attrs_dict.get("aria-label") or "").strip(),
-                "data_title": (attrs_dict.get("data-title") or "").strip(),
-                "start_index": len(self._stack) - 1,
-            }
+        self._current_anchor = {
+            "href": urljoin(self.base_url, href),
+            "title": (attrs_dict.get("title") or "").strip(),
+            "aria_label": (attrs_dict.get("aria-label") or "").strip(),
+            "data_title": (attrs_dict.get("data-title") or "").strip(),
+            "start_index": len(self._stack) - 1,
+        }
 
     def handle_endtag(self, tag: str):
-        if tag == "a" and self._current_anchor:
+        if self._current_anchor and self._stack:
             start_index = int(self._current_anchor.get("start_index", len(self._stack) - 1))
+            if start_index != len(self._stack) - 1:
+                if self._stack:
+                    self._stack.pop()
+                return
+            elif tag != str(self._stack[-1].get("tag") or ""):
+                if self._stack:
+                    self._stack.pop()
+                return
             text = self._entry_text(self._stack[start_index]) if start_index < len(self._stack) else ""
             card_text = self._nearest_card_text(start_index)
             self.anchors.append(
@@ -75,6 +82,20 @@ class AnchorParser(HTMLParser):
             class_name = str(attrs_dict.get("class") or "")
             if tag in {"article", "li"} or any(token in class_name.lower() for token in ("card", "item", "course")):
                 return self._entry_text(entry)
+        return ""
+
+    @staticmethod
+    def _candidate_href(tag: str, attrs: dict[str, str | None]) -> str:
+        if tag == "a" and attrs.get("href"):
+            return str(attrs.get("href") or "")
+        if attrs.get("role") != "link" and not any(
+            key in attrs for key in ("data-url", "data-href", "data-link", "data-jump-url")
+        ):
+            return ""
+        for key in ("data-url", "data-href", "data-link", "data-jump-url", "href"):
+            value = attrs.get(key)
+            if value:
+                return str(value)
         return ""
 
 

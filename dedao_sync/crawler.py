@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
+from .browser import is_dedao_logged_in_page
 from .extractor import TranscriptExtractor
 from .models import AppConfig, ColumnConfig, ContentDetail, ContentItem
 from .time_utils import now_local
@@ -21,6 +22,7 @@ class CrawlerError(RuntimeError):
 class CrawlResult:
     items: list[ContentItem]
     empty_but_valid: bool = False
+    diagnostic_path: Path | None = None
 
 
 class DedaoCrawler:
@@ -38,9 +40,22 @@ class DedaoCrawler:
         return sync_playwright
 
     def _new_context(self, playwright):
+        if self.config.dedao.browser_profile_dir.exists():
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=str(self.config.dedao.browser_profile_dir),
+                headless=self.config.dedao.headless,
+            )
+            return None, context
         browser = playwright.chromium.launch(headless=self.config.dedao.headless)
         context = browser.new_context(storage_state=str(self.config.dedao.auth_state_path))
         return browser, context
+
+    @staticmethod
+    def _close_context(browser, context) -> None:
+        if browser is None:
+            context.close()
+        else:
+            browser.close()
 
     def check_login(self) -> bool:
         sync_playwright = self._sync_playwright()
@@ -48,17 +63,12 @@ class DedaoCrawler:
             browser, context = self._new_context(playwright)
             try:
                 page = context.new_page()
-                page.goto("https://www.dedao.cn/bought", wait_until="domcontentloaded", timeout=30000)
+                self._goto_page(page, "https://www.dedao.cn/bought", timeout=30000)
                 page.wait_for_timeout(2000)
-                url = page.url.lower()
                 text = page.locator("body").inner_text(timeout=10000)
-                login_markers = ("登录", "扫码", "验证码", "手机号")
-                logged_in_markers = ("已购", "学习", "我的")
-                if "login" in url or any(marker in text for marker in login_markers):
-                    return False
-                return any(marker in text for marker in logged_in_markers)
+                return is_dedao_logged_in_page(page.url, text)
             finally:
-                browser.close()
+                self._close_context(browser, context)
 
     def list_items(self, column: ColumnConfig) -> CrawlResult:
         sync_playwright = self._sync_playwright()
@@ -66,13 +76,16 @@ class DedaoCrawler:
             browser, context = self._new_context(playwright)
             try:
                 page = context.new_page()
-                page.goto(column.url, wait_until="domcontentloaded", timeout=45000)
-                page.wait_for_timeout(self._request_delay_ms())
+                self._goto_page(page, column.url, timeout=45000)
+                self._prepare_list_page(page)
                 anchors = self._page_anchors(page)
                 items = self.items_from_anchors(column, anchors)
-                return CrawlResult(items=items, empty_but_valid=False)
+                diagnostic_path = None
+                if not items and self.config.dedao.save_failure_html:
+                    diagnostic_path = self._save_list_failure_snapshot(column, page, anchors)
+                return CrawlResult(items=items, empty_but_valid=False, diagnostic_path=diagnostic_path)
             finally:
-                browser.close()
+                self._close_context(browser, context)
 
     def fetch_detail(self, item: ContentItem) -> ContentDetail:
         sync_playwright = self._sync_playwright()
@@ -80,7 +93,7 @@ class DedaoCrawler:
             browser, context = self._new_context(playwright)
             try:
                 page = context.new_page()
-                page.goto(item.detail_url, wait_until="domcontentloaded", timeout=45000)
+                self._goto_page(page, item.detail_url, timeout=45000)
                 page.wait_for_timeout(self._request_delay_ms())
                 title = page.title() or item.title
                 html = page.content()
@@ -101,7 +114,7 @@ class DedaoCrawler:
                     detail = replace(detail, diagnostic_path=path)
                 return detail
             finally:
-                browser.close()
+                self._close_context(browser, context)
                 time.sleep(self._request_delay_seconds())
 
     def _save_failure_html(self, item: ContentItem, html: str, raw_html_hash: str | None) -> Path:
@@ -116,6 +129,22 @@ class DedaoCrawler:
         target.write_text(html, encoding="utf-8")
         return target
 
+    def _save_list_failure_snapshot(self, column: ColumnConfig, page, anchors: list[dict[str, object]]) -> Path:
+        output_dir = self.config.dedao.failure_snapshot_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        parsed = urlparse(column.url)
+        slug_source = "_".join(part for part in (parsed.netloc, parsed.path.strip("/"), parsed.query, column.name) if part)
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "_", slug_source).strip("_") or "list"
+        stamp = now_local().strftime("%Y%m%d-%H%M%S")
+        target = output_dir / f"{stamp}-list-{slug[:80]}.html"
+        target.write_text(page.content(), encoding="utf-8")
+        try:
+            target.with_suffix(".txt").write_text(page.locator("body").inner_text(timeout=10000), encoding="utf-8")
+        except Exception:
+            pass
+        target.with_suffix(".anchors.json").write_text(json.dumps(anchors, ensure_ascii=False, indent=2), encoding="utf-8")
+        return target
+
     def inspect_page(self, url: str, output_dir: str | Path) -> Path:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -124,8 +153,8 @@ class DedaoCrawler:
             browser, context = self._new_context(playwright)
             try:
                 page = context.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                page.wait_for_timeout(self._request_delay_ms())
+                self._goto_page(page, url, timeout=45000)
+                self._prepare_list_page(page)
                 slug = re.sub(r"[^A-Za-z0-9._-]+", "_", urlparse(url).netloc + urlparse(url).path).strip("_")
                 if not slug:
                     slug = "page"
@@ -140,13 +169,44 @@ class DedaoCrawler:
                 )
                 return target
             finally:
-                browser.close()
+                self._close_context(browser, context)
 
     def _request_delay_seconds(self) -> float:
         return self.jittered_delay_seconds(self.config.dedao.request_interval_seconds)
 
     def _request_delay_ms(self) -> int:
         return int(self._request_delay_seconds() * 1000)
+
+    @staticmethod
+    def _goto_page(page, url: str, *, timeout: int) -> None:
+        try:
+            page.goto(url, wait_until="commit", timeout=timeout)
+        except Exception as exc:
+            message = str(exc).lower()
+            unsupported_wait_state = (
+                "expected one of" in message
+                or (("wait_until" in message or "waituntil" in message) and ("invalid" in message or "unknown" in message))
+            )
+            if "timeout" in message or not unsupported_wait_state:
+                raise
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+
+    def _prepare_list_page(self, page) -> None:
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+        page.wait_for_timeout(self._request_delay_ms())
+        self._scroll_page(page)
+
+    @staticmethod
+    def _scroll_page(page, *, steps: int = 4, wait_ms: int = 800) -> None:
+        for _ in range(steps):
+            try:
+                page.evaluate("window.scrollBy(0, Math.max(window.innerHeight, 800))")
+                page.wait_for_timeout(wait_ms)
+            except Exception:
+                return
 
     @staticmethod
     def jittered_delay_seconds(base_seconds: float) -> float:
@@ -157,14 +217,27 @@ class DedaoCrawler:
     @staticmethod
     def _page_anchors(page) -> list[dict[str, object]]:
         return page.eval_on_selector_all(
-            "a",
+            "a, [role=link], [onclick], [data-url], [data-href], [data-link], [data-jump-url]",
             """els => els.map(a => ({
-                href: a.href,
+                href: (
+                    a.href ||
+                    a.getAttribute('href') ||
+                    a.getAttribute('data-url') ||
+                    a.getAttribute('data-href') ||
+                    a.getAttribute('data-link') ||
+                    a.getAttribute('data-jump-url') ||
+                    a.dataset?.url ||
+                    a.dataset?.href ||
+                    a.dataset?.link ||
+                    a.dataset?.jumpUrl ||
+                    ''
+                ),
                 text: (a.innerText || a.textContent || '').trim(),
                 title: (a.getAttribute('title') || '').trim(),
                 aria_label: (a.getAttribute('aria-label') || '').trim(),
                 data_title: (a.getAttribute('data-title') || a.dataset?.title || '').trim(),
-                card_text: ((a.closest('article, li, [class*=card], [class*=item], [class*=course]') || a).innerText || '').trim()
+                card_text: ((a.closest('article, li, [class*=card], [class*=item], [class*=course], [class*=list]') || a).innerText || '').trim(),
+                dataset: Object.assign({}, a.dataset || {})
             }))""",
         )
 
@@ -215,7 +288,10 @@ class DedaoCrawler:
         if parsed.netloc and not parsed.netloc.endswith("dedao.cn"):
             return False
         text = url.lower()
-        return any(marker in text for marker in ("detail", "course", "article", "audio", "video", "id="))
+        return any(
+            marker in text
+            for marker in ("detail", "course", "article", "audio", "video", "content", "knowledge", "id=")
+        )
 
     @staticmethod
     def _normalize_url(url: str, base_url: str) -> str:

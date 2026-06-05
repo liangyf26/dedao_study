@@ -153,9 +153,10 @@ Playwright 官方支持保存 cookies、localStorage、IndexedDB 等登录状态
 
 设计：
 
-- `dedao-sync login` 使用 headful Chromium。
+- `dedao-sync login` 使用 headful Chromium 和 `browser_profile_dir` 持久用户目录。
 - 用户手动登录。
-- 登录成功后保存 `storage_state`，并可选保留 persistent profile。
+- 登录成功后保存 `storage_state`，同时保留 persistent profile；后续抓取优先复用 persistent profile，`storage_state` 作为兼容兜底。
+- 保存后立即访问已购页验证登录态，避免只写入了形状正确但实际不可用的 auth JSON。
 - 保存后校验 `storage_state` 文件：必须是 JSON object，包含 Playwright 的 `cookies` 和 `origins` 列表，且至少有一项非空。
 - `doctor` 和 `preflight` 复用同一校验逻辑，避免空文件、坏 JSON 或 `{}` 被误认为已登录。
 - `sync` 命令优先使用已保存的 state。
@@ -201,6 +202,7 @@ Obscura 官方仓库描述其为 Rust 编写的 headless browser engine，面向
 
 - 打开栏目页。
 - 等待主要内容区域加载。
+- 导航先等待页面提交成功（Playwright `wait_until="commit"`），再用项目自己的 network idle、基础间隔和滚动采集策略等待内容；避免得到 SPA 页面长期不触发 `domcontentloaded` 导致整栏超时。
 - 提取内容列表。
 - 栏目列表链接标题优先使用可见文本；当链接文本只是“播放/查看”等短按钮或为空时，回退到 `title`、`aria-label`、`data-title` 和父卡片文本。
 - 打开详情页。
@@ -677,7 +679,7 @@ dedao-sync.timer
 | 场景 | 处理 |
 | --- | --- |
 | 登录失效 | 停止抓取，提示重新登录，发送飞书失败通知 |
-| 单个栏目失败 | 记录失败，继续其他栏目 |
+| 单个栏目失败 | 记录失败，继续其他栏目；控制台只输出短错误，详细上下文保留在运行记录和日志中 |
 | 单篇内容失败 | 记录失败，继续其他内容 |
 | 摘要失败 | 保存全文，标记 `summary_failed` |
 | 飞书失败 | 写日志，不影响同步 |

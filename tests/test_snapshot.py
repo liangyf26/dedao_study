@@ -71,6 +71,35 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(result.item_candidates[0].dedao_id, "aria")
             self.assertEqual(result.item_candidates[0].title, "尹烨 健康参考 第一期")
 
+    def test_parse_snapshot_uses_role_link_data_url_for_items(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            html_path = Path(tmp) / "page.html"
+            html_path.write_text(
+                """
+                <html><body>
+                <div role="link" data-url="/course/detail?id=role">长谈 最新一期 脱不花对谈创业者</div>
+                <article>
+                  <h1>长谈 页面</h1>
+                  <p>长谈 页面第一段内容足够长，用于让正文候选存在，但本测试重点是非 a 标签的栏目条目候选。这里补充背景、事实和判断，让正文接近真实页面。</p>
+                  <p>第二段继续展开观点，解释原因、条件和限制，避免正文候选太短。这里还会说明读者需要怎样把内容转化成笔记。</p>
+                  <p>第三段补充边界和观察，形成可解析正文。最后再加入行动建议、复盘问题和后续观察信号，确保质量门槛可以通过。</p>
+                </article>
+                </body></html>
+                """,
+                encoding="utf-8",
+            )
+
+            result = parse_snapshot(
+                html_path,
+                title="长谈 页面",
+                column_name="栏目",
+                source_url="https://www.dedao.cn/course/detail?id=course",
+            )
+
+            self.assertEqual(len(result.item_candidates), 1)
+            self.assertEqual(result.item_candidates[0].dedao_id, "role")
+            self.assertEqual(result.item_candidates[0].title, "长谈 最新一期 脱不花对谈创业者")
+
     def test_items_from_anchors_filters_external_urls(self):
         column = ColumnConfig("栏目", "https://www.dedao.cn/course/detail?id=course")
         items = DedaoCrawler.items_from_anchors(

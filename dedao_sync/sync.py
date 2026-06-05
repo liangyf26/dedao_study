@@ -186,14 +186,20 @@ def run_sync(
                 report.request_count += 1
                 crawl_result = crawler.list_items(column)
             except Exception as exc:
+                safe_error = redact(exc)
                 report.failed_count += 1
                 report.failures.append(redact(f"{column.name}: {exc}"))
-                LOGGER.exception("column failed: %s", column.name)
+                LOGGER.warning("column failed: %s: %s", column.name, safe_error)
                 continue
 
             if not crawl_result.items and not crawl_result.empty_but_valid:
                 report.failed_count += 1
-                report.failures.append(f"{column.name}: 页面解析失败，未发现内容列表")
+                message = f"{column.name}: 页面解析失败，未发现内容列表"
+                if crawl_result.diagnostic_path:
+                    message = f"{message}; diagnostic_html={crawl_result.diagnostic_path}"
+                else:
+                    message = f"{message}; 可运行 inspect-page 保存页面快照后用 parse-snapshot 分析"
+                report.failures.append(message)
                 continue
 
             report.discovered_count += len(crawl_result.items)

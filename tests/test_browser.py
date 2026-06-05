@@ -5,13 +5,23 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from dedao_sync.browser import check_playwright_chromium, validate_storage_state_file
+from dedao_sync.browser import check_playwright_chromium, is_dedao_logged_in_page, validate_storage_state_file
 
 
 VALID_STATE = '{"cookies":[{"name":"sid","value":"test","domain":".dedao.cn","path":"/"}],"origins":[]}'
 
 
 class BrowserTests(unittest.TestCase):
+    def test_dedao_login_detector_prefers_logged_in_markers(self):
+        text = "我的 学习 已购 退出登录"
+
+        self.assertTrue(is_dedao_logged_in_page("https://www.dedao.cn/bought", text))
+
+    def test_dedao_login_detector_rejects_login_page(self):
+        text = "扫码登录 手机号登录 验证码"
+
+        self.assertFalse(is_dedao_logged_in_page("https://www.dedao.cn/login", text))
+
     def test_validate_storage_state_accepts_playwright_shape_with_auth_data(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.json"
@@ -48,6 +58,28 @@ class BrowserTests(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertIn("Playwright Python package is missing", message)
+
+    def test_check_playwright_chromium_reports_inaccessible_executable(self):
+        class FakeChromium:
+            executable_path = "C:/ms-playwright/chromium/chrome.exe"
+
+        class FakePlaywright:
+            chromium = FakeChromium()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        fake_module = mock.Mock(sync_playwright=mock.Mock(return_value=FakePlaywright()))
+
+        with mock.patch.dict("sys.modules", {"playwright.sync_api": fake_module}):
+            with mock.patch("pathlib.Path.exists", side_effect=PermissionError("denied")):
+                ok, message = check_playwright_chromium()
+
+        self.assertFalse(ok)
+        self.assertIn("not accessible", message)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,2 @@
+[console_scripts]
+dedao-sync = dedao_sync.cli:main
