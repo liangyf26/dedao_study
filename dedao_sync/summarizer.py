@@ -4,6 +4,7 @@ import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import replace
 from typing import Any
@@ -22,6 +23,8 @@ class SummaryService:
 
 
 MAX_TRANSCRIPT_CHARS = 30000
+DEFAULT_SUMMARY_TIMEOUT_SECONDS = 180
+SUMMARY_API_USER_AGENT = "dedao-sync/0.1"
 
 
 class DisabledSummaryService(SummaryService):
@@ -30,7 +33,7 @@ class DisabledSummaryService(SummaryService):
 
 
 class OpenAICompatibleSummaryService(SummaryService):
-    def __init__(self, config: SummaryConfig, *, timeout_seconds: int = 60):
+    def __init__(self, config: SummaryConfig, *, timeout_seconds: int = DEFAULT_SUMMARY_TIMEOUT_SECONDS):
         self.config = config
         self.timeout_seconds = timeout_seconds
 
@@ -39,6 +42,7 @@ class OpenAICompatibleSummaryService(SummaryService):
         api_key = os.environ.get(self.config.api_key_env, "")
         if not base_url or not api_key:
             raise SummaryError("summary API env is not configured")
+        endpoint = chat_completions_url(base_url)
         prompt = build_summary_prompt(detail)
         payload = {
             "model": self.config.model,
@@ -49,9 +53,14 @@ class OpenAICompatibleSummaryService(SummaryService):
             "temperature": 0.2,
         }
         request = urllib.request.Request(
-            f"{base_url}/chat/completions",
+            endpoint,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": SUMMARY_API_USER_AGENT,
+            },
             method="POST",
         )
         try:
@@ -62,15 +71,54 @@ class OpenAICompatibleSummaryService(SummaryService):
                 error_body = exc.read().decode("utf-8", errors="replace")
             except Exception:
                 error_body = str(exc)
-            raise SummaryError(f"summary API HTTP {exc.code}: {redact(error_body)[:500]}") from exc
+            context = summary_api_context(self.config, base_url)
+            hint = summary_http_hint(exc.code, error_body)
+            message = f"summary API HTTP {exc.code} ({context}): {redact(error_body)[:500]}"
+            if hint:
+                message = f"{message}; {hint}"
+            raise SummaryError(message) from exc
         except urllib.error.URLError as exc:
             raise SummaryError(redact(exc)) from exc
+        except TimeoutError as exc:
+            raise SummaryError(f"summary API timeout after {self.timeout_seconds}s: {redact(exc)}") from exc
         try:
             parsed = json.loads(body)
             content = parsed["choices"][0]["message"]["content"]
         except (KeyError, IndexError, json.JSONDecodeError) as exc:
             raise SummaryError(redact(body)) from exc
         return finalize_summary_result(detail, parse_summary_text(content))
+
+
+def chat_completions_url(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    return f"{base}/chat/completions"
+
+
+def summary_api_context(config: SummaryConfig, base_url: str) -> str:
+    parsed = urllib.parse.urlsplit(base_url)
+    if parsed.scheme and parsed.netloc:
+        safe_base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/") or "/", "", ""))
+    else:
+        safe_base = base_url
+    return f"provider={config.provider}, model={config.model}, base_url={redact(safe_base)}"
+
+
+def summary_http_hint(status_code: int, error_body: str) -> str:
+    normalized = error_body.lower()
+    if status_code == 403 and "1010" in normalized:
+        return (
+            "hint=HTTP 403/error code 1010 usually means the summary provider denied or blocked this request; "
+            "check the base URL, API key/account permissions, allowed model, IP/WAF rules, or provider quota"
+        )
+    if status_code == 401:
+        return "hint=check the summary API key"
+    if status_code == 403:
+        return "hint=check summary API account permissions, model access, quota, or provider-side access rules"
+    if status_code == 404:
+        return "hint=check summary base URL; it should point to an OpenAI-compatible /v1 endpoint"
+    return ""
 
 
 def build_summary_prompt(detail: ContentDetail) -> str:

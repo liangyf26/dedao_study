@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from dedao_sync.extractor import (
     TranscriptExtractor,
+    ddarticle_payload_to_transcript,
     extract_media_candidates,
     extract_metadata,
     html_to_candidate_texts,
@@ -83,6 +85,83 @@ class ExtractorTests(unittest.TestCase):
         self.assertEqual(detail.item.title, "健康参考 真实标题")
         self.assertEqual(detail.item.author, "尹烨")
         self.assertEqual(detail.item.published_at, "2026-05-27T08:00:00+08:00")
+
+    def test_from_html_keeps_list_title_when_detail_title_is_generic_dedao_title(self):
+        item = ContentItem(
+            source_url="https://example.com/list-title",
+            detail_url="https://example.com/detail",
+            column_name="栏目",
+            title="873｜周日荐文：Anthropic万字长文",
+        )
+        html = """
+        <html>
+          <head>
+            <title>得到APP - 知识就是力量，知识就在得到</title>
+            <meta property="article:published_time" content="2026-06-07">
+          </head>
+          <body>
+            <article>
+              <h1>873｜周日荐文：Anthropic万字长文</h1>
+              <p>873｜周日荐文：Anthropic万字长文这一期先交代背景、事实和判断依据，形成足够完整的第一段正文内容。</p>
+              <p>第二段继续展开核心观点，说明适用边界、可能例外，以及为什么不能把这个结论简单套用到所有场景。</p>
+              <p>第三段给出行动建议和复盘问题，帮助读者把内容转化成后续可以观察、记录和重新检查的笔记。</p>
+            </article>
+          </body>
+        </html>
+        """
+
+        detail = TranscriptExtractor(min_length=120, min_paragraphs=3).from_html(item, html)
+
+        self.assertTrue(detail.has_transcript)
+        self.assertEqual(detail.item.title, "873｜周日荐文：Anthropic万字长文")
+        self.assertEqual(detail.item.published_at, "2026-06-07")
+
+    def test_from_ddarticle_payload_extracts_block_transcript(self):
+        item = ContentItem(
+            source_url="https://www.dedao.cn/course/article?id=abc",
+            detail_url="https://www.dedao.cn/course/article?id=abc",
+            column_name="尹烨·健康参考",
+            title="发刊词｜给你科学底气，活出百岁人生",
+        )
+        blocks = [
+            {"type": "audio", "title": "发刊词.mp3"},
+            {"type": "salutation", "text": "$_IGET_USER_NAME_$，你好。"},
+            {"type": "paragraph", "text": "欢迎来到《健康参考》，我是尹烨。"},
+            {"type": "paragraph", "contents": [{"type": "text", "text": {"content": "这门课会帮助你建立百岁人生的健康管理观。"}}]},
+            {"type": "header", "text": "我为什么做这门课？"},
+            {"type": "blockquote", "text": "活出百岁人生，需要科学底气，也需要把身体看成一个动态系统来长期管理。"},
+            {"type": "paragraph", "text": "我们会从饮食、运动、睡眠和压力管理几个方面，建立可以执行、可以复盘的健康行动清单。"},
+        ]
+        payload = {"c": {"content": json.dumps(blocks, ensure_ascii=False)}}
+
+        transcript = ddarticle_payload_to_transcript(payload)
+        detail = TranscriptExtractor(min_length=80, min_paragraphs=3).from_ddarticle_payload(item, payload)
+
+        self.assertIn("欢迎来到《健康参考》", transcript)
+        self.assertNotIn("发刊词.mp3", transcript)
+        self.assertNotIn("$_IGET_USER_NAME_$", transcript)
+        self.assertTrue(detail.has_transcript)
+        self.assertIn("百岁人生", detail.transcript_text)
+
+    def test_from_ddarticle_payload_does_not_require_marketing_title_terms(self):
+        item = ContentItem(
+            source_url="https://www.dedao.cn/course/article?id=abc",
+            detail_url="https://www.dedao.cn/course/article?id=abc",
+            column_name="尹烨·健康参考",
+            title="003｜日行5000步，就能保护大脑？",
+        )
+        blocks = [
+            {"type": "paragraph", "text": "今天我们聊运动和认知衰退之间的关系。"},
+            {"type": "paragraph", "text": "研究团队长期追踪参与者，并用计步器客观记录每天的步数。"},
+            {"type": "paragraph", "text": "结果显示，规律步行和大脑健康之间存在明确联系，这为普通人提供了容易执行的行动入口。"},
+            {"type": "paragraph", "text": "你不需要一开始就追求高强度训练，先把每天的活动量稳定下来，就已经是在为未来的大脑状态投资。"},
+        ]
+        payload = {"c": {"content": json.dumps(blocks, ensure_ascii=False)}}
+
+        detail = TranscriptExtractor(min_length=100, min_paragraphs=3).from_ddarticle_payload(item, payload)
+
+        self.assertTrue(detail.has_transcript)
+        self.assertIn("大脑健康", detail.transcript_text)
 
     def test_from_html_extracts_media_candidates(self):
         item = ContentItem(

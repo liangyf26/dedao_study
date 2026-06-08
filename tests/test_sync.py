@@ -224,6 +224,44 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(report2.success_count, 1)
             logging.shutdown()
 
+    def test_sync_limit_stops_after_new_item_and_logs_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+            first = ContentItem("https://example.com/one", "栏目", "健康参考 One", "https://example.com/one", dedao_id="one")
+            second = ContentItem("https://example.com/two", "栏目", "健康参考 Two", "https://example.com/two", dedao_id="two")
+            crawler = FakeCrawler(
+                [first, second],
+                {
+                    "one": "健康参考 One\n\n第一段内容很长。\n\n第二段继续展开。\n\n第三段补充。",
+                    "two": "健康参考 Two\n\n第一段内容很长。\n\n第二段继续展开。\n\n第三段补充。",
+                },
+            )
+
+            with self.assertLogs("dedao_sync.sync", level="INFO") as captured:
+                report, _ = run_sync(
+                    config_path,
+                    crawler=crawler,
+                    summary_service=FakeSummary(),
+                    notifier=FakeNotifier(),
+                    limit=1,
+                )
+
+            self.assertEqual(report.status, "success")
+            self.assertEqual(report.new_count, 1)
+            self.assertEqual(report.success_count, 1)
+            rows = SyncRepository(default_db_path(root)).list_items()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["dedao_id"], "one")
+            logs = "\n".join(captured.output)
+            self.assertIn("column discovered: 栏目 items=2", logs)
+            self.assertIn("fetching detail: 栏目 - 健康参考 One", logs)
+            self.assertIn("sync limit reached: 1 new item(s); stopping", logs)
+            logging.shutdown()
+
     def test_run_sync_can_skip_notification_for_manual_check(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -5,13 +5,14 @@ import random
 import re
 import time
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 from .browser import is_dedao_logged_in_page
 from .extractor import TranscriptExtractor
 from .models import AppConfig, ColumnConfig, ContentDetail, ContentItem
-from .time_utils import now_local
+from .time_utils import APP_TIMEZONE, now_local
 
 
 class CrawlerError(RuntimeError):
@@ -23,6 +24,11 @@ class CrawlResult:
     items: list[ContentItem]
     empty_but_valid: bool = False
     diagnostic_path: Path | None = None
+
+
+def _is_playwright_timeout(exc: Exception) -> bool:
+    name = type(exc).__name__.lower()
+    return "timeout" in name or "timeout" in str(exc).lower()
 
 
 class DedaoCrawler:
@@ -76,10 +82,17 @@ class DedaoCrawler:
             browser, context = self._new_context(playwright)
             try:
                 page = context.new_page()
+                aiquan_articles: list[dict[str, object]] = []
+                if urlparse(column.url).netloc.lower() == "aiquan.dedao.cn":
+                    page.on("response", lambda response: self._capture_aiquan_article_response(response, aiquan_articles))
                 self._goto_page(page, column.url, timeout=45000)
                 self._prepare_list_page(page)
                 anchors = self._page_anchors(page)
                 items = self.items_from_anchors(column, anchors)
+                if not items:
+                    items = self._page_vue_course_items(page, column)
+                if not items and aiquan_articles:
+                    items = self.items_from_aiquan_articles(column, aiquan_articles)
                 diagnostic_path = None
                 if not items and self.config.dedao.save_failure_html:
                     diagnostic_path = self._save_list_failure_snapshot(column, page, anchors)
@@ -93,7 +106,20 @@ class DedaoCrawler:
             browser, context = self._new_context(playwright)
             try:
                 page = context.new_page()
-                self._goto_page(page, item.detail_url, timeout=45000)
+                ddarticle_payloads: list[dict[str, object]] = []
+                page.on("response", lambda response: self._capture_ddarticle_response(response, ddarticle_payloads))
+                try:
+                    with page.expect_response(
+                        lambda response: "/pc/ddarticle/v1/article/get/v2" in response.url and response.status == 200,
+                        timeout=15000,
+                    ) as response_info:
+                        self._goto_page(page, item.detail_url, timeout=45000)
+                    self._capture_ddarticle_response(response_info.value, ddarticle_payloads)
+                except Exception as exc:
+                    if not _is_playwright_timeout(exc):
+                        raise
+                    if page.url == "about:blank":
+                        self._goto_page(page, item.detail_url, timeout=45000)
                 page.wait_for_timeout(self._request_delay_ms())
                 title = page.title() or item.title
                 html = page.content()
@@ -108,7 +134,13 @@ class DedaoCrawler:
                         author=item.author,
                         content_type=item.content_type,
                     )
-                detail = self.extractor.from_html(item, html)
+                detail = (
+                    self.extractor.from_ddarticle_payload(item, ddarticle_payloads[-1])
+                    if ddarticle_payloads
+                    else self.extractor.from_html(item, html)
+                )
+                if not detail.has_transcript and ddarticle_payloads:
+                    detail = self.extractor.from_html(item, html)
                 if not detail.has_transcript and self.config.dedao.save_failure_html:
                     path = self._save_failure_html(detail.item, html, detail.raw_html_hash)
                     detail = replace(detail, diagnostic_path=path)
@@ -242,6 +274,133 @@ class DedaoCrawler:
         )
 
     @classmethod
+    def _page_vue_course_items(cls, page, column: ColumnConfig) -> list[ContentItem]:
+        articles = page.evaluate(
+            """() => {
+                let best = [];
+                for (const el of document.querySelectorAll('*')) {
+                    for (const key of Object.keys(el)) {
+                        if (!key.startsWith('__vue')) continue;
+                        const vm = el[key];
+                        const list = vm && vm.$data && vm.$data.contentArticleList;
+                        if (Array.isArray(list) && list.length > best.length) {
+                            best = list;
+                        }
+                    }
+                }
+                return best.map(item => ({
+                    enid: item && (item.enid || (item.audio && item.audio.articleEnid) || ''),
+                    id: item && (item.idStr || item.id || item.ddArticleIdStr || item.ddArticleId || ''),
+                    title: item && (item.title || (item.audio && item.audio.title) || ''),
+                    publishTime: item && item.publishTime,
+                    url: item && item.url || ''
+                }));
+            }"""
+        )
+        return cls.items_from_vue_articles(column, articles)
+
+    @classmethod
+    def _capture_aiquan_article_response(cls, response, output: list[dict[str, object]]) -> None:
+        if "/aichannel/sphere/v1/app/special/article_list" not in response.url:
+            return
+        try:
+            payload = response.json()
+        except Exception:
+            return
+        if not isinstance(payload, dict):
+            return
+        container = payload.get("c")
+        if not isinstance(container, dict):
+            return
+        articles = container.get("article_list")
+        if not isinstance(articles, list):
+            return
+        for article in articles:
+            if not isinstance(article, dict):
+                continue
+            audio = article.get("audio")
+            audio = audio if isinstance(audio, dict) else {}
+            output.append(
+                {
+                    "enid": article.get("en_id") or article.get("enid") or "",
+                    "id": article.get("id_str") or article.get("id") or "",
+                    "title": article.get("title") or audio.get("title") or "",
+                    "publishTime": article.get("publish_time") or article.get("publishTime"),
+                }
+            )
+
+    @classmethod
+    def _capture_ddarticle_response(cls, response, output: list[dict[str, object]]) -> None:
+        if "/pc/ddarticle/v1/article/get/v2" not in response.url:
+            return
+        try:
+            payload = response.json()
+        except Exception:
+            return
+        if isinstance(payload, dict):
+            output.append(payload)
+
+    @classmethod
+    def items_from_aiquan_articles(cls, column: ColumnConfig, articles: list[dict[str, object]]) -> list[ContentItem]:
+        items: list[ContentItem] = []
+        seen: set[str] = set()
+        for article in articles:
+            title = re.sub(r"\s+", " ", str(article.get("title") or "")).strip()
+            enid = str(article.get("enid") or "").strip()
+            raw_id = str(article.get("id") or "").strip()
+            if not title or len(title) < 4 or not enid:
+                continue
+            detail_url = cls._normalize_url(f"https://www.dedao.cn/course/article?id={enid}", column.url)
+            if detail_url in seen:
+                continue
+            seen.add(detail_url)
+            items.append(
+                ContentItem(
+                    source_url=detail_url,
+                    detail_url=detail_url,
+                    dedao_id=enid or raw_id,
+                    column_name=column.name,
+                    title=title[:120],
+                    published_at=cls._format_publish_time(article.get("publishTime")),
+                    content_type="web",
+                )
+            )
+        return items
+
+    @classmethod
+    def items_from_vue_articles(cls, column: ColumnConfig, articles: list[dict[str, object]]) -> list[ContentItem]:
+        items: list[ContentItem] = []
+        seen: set[str] = set()
+        for article in articles:
+            title = re.sub(r"\s+", " ", str(article.get("title") or "")).strip()
+            enid = str(article.get("enid") or "").strip()
+            raw_url = str(article.get("url") or "").strip()
+            raw_id = str(article.get("id") or "").strip()
+            if not title or len(title) < 4:
+                continue
+            if raw_url:
+                detail_url = cls._normalize_url(raw_url, column.url)
+            elif enid:
+                detail_url = cls._normalize_url(f"/course/article?id={enid}", column.url)
+            else:
+                continue
+            if detail_url in seen:
+                continue
+            seen.add(detail_url)
+            items.append(
+                ContentItem(
+                    source_url=detail_url,
+                    detail_url=detail_url,
+                    dedao_id=enid or raw_id or cls._extract_id(detail_url),
+                    column_name=column.name,
+                    title=title[:120],
+                    published_at=cls._format_publish_time(article.get("publishTime")),
+                    content_type="web",
+                )
+            )
+        return items
+
+    @classmethod
     def items_from_anchors(cls, column: ColumnConfig, anchors: list[dict[str, object]]) -> list[ContentItem]:
         items: list[ContentItem] = []
         seen: set[str] = set()
@@ -299,6 +458,18 @@ class DedaoCrawler:
         parsed = urlparse(absolute)
         query = urlencode(sorted(parse_qsl(parsed.query, keep_blank_values=True)), doseq=True)
         return urlunparse((parsed.scheme, parsed.netloc.lower(), parsed.path, "", query, ""))
+
+    @staticmethod
+    def _format_publish_time(value: object) -> str | None:
+        if value in (None, ""):
+            return None
+        try:
+            timestamp = int(float(str(value)))
+        except (TypeError, ValueError):
+            return str(value).strip() or None
+        if timestamp <= 0:
+            return None
+        return datetime.fromtimestamp(timestamp, APP_TIMEZONE).strftime("%Y-%m-%d")
 
     @staticmethod
     def _extract_id(url: str) -> str | None:

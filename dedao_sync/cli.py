@@ -34,6 +34,16 @@ from .time_utils import now_local
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
 
+def _make_stream_unicode_safe(stream) -> None:
+    reconfigure = getattr(stream, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+    try:
+        reconfigure(errors="backslashreplace")
+    except (OSError, ValueError):
+        return
+
+
 def _add_config_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", default="config.yaml", help="Path to config file")
 
@@ -108,6 +118,8 @@ def cmd_sync(args: argparse.Namespace) -> int:
         column_name=args.column,
         dry_run=args.dry_run,
         send_notification=not args.dry_run,
+        limit=args.limit,
+        skip_summary=args.no_summary,
     )
     print(f"sync status: {report.status}")
     for failure in report.failures:
@@ -353,6 +365,8 @@ def build_parser() -> argparse.ArgumentParser:
     sync = sub.add_parser("sync", help="Run sync workflow")
     _add_config_arg(sync)
     sync.add_argument("--column", help="Limit sync to one column")
+    sync.add_argument("--limit", type=int, help="Stop after processing N new unsynced items")
+    sync.add_argument("--no-summary", action="store_true", help="Write transcript notes without calling the summary API")
     sync.add_argument("--dry-run", action="store_true", help="Discover without writing notes or sending notifications")
     sync.set_defaults(func=cmd_sync)
 
@@ -404,6 +418,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _make_stream_unicode_safe(sys.stdout)
+    _make_stream_unicode_safe(sys.stderr)
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

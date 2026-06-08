@@ -59,8 +59,25 @@ class CliTests(unittest.TestCase):
             column_name=None,
             dry_run=True,
             send_notification=False,
+            limit=None,
+            skip_summary=False,
         )
         self.assertIn("sync status: success", output.getvalue())
+
+    def test_sync_limit_and_no_summary_are_passed(self):
+        report = RunReport(started_at=datetime(2026, 5, 27, 8, 0, 0), status="success")
+        with mock.patch("dedao_sync.cli.run_sync", return_value=(report, 1)) as run_sync:
+            code = main(["sync", "--config", "config.yaml", "--limit", "2", "--no-summary"])
+
+        self.assertEqual(code, 0)
+        run_sync.assert_called_once_with(
+            "config.yaml",
+            column_name=None,
+            dry_run=False,
+            send_notification=True,
+            limit=2,
+            skip_summary=True,
+        )
 
     def test_resummarize_all_passes_include_synced(self):
         report = RunReport(started_at=datetime(2026, 5, 27, 8, 0, 0), status="success")
@@ -102,6 +119,41 @@ class CliTests(unittest.TestCase):
                 ]
             )
             self.assertEqual(code, 0)
+
+    def test_parse_snapshot_show_candidates_on_narrow_console(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            html = Path(tmp) / "page.html"
+            html.write_text(
+                """
+                <html><body><article>
+                <h1>健康参考</h1>
+                <p>健康参考第一段内容足够长，用于验证候选诊断输出。这里补充事实、判断和背景，形成自然段落，并继续说明问题出现的具体场景、上下文和读者需要留意的变量。</p>
+                <p>第二段继续展开核心观点，说明适用边界和例外情况，让正文长度超过质量门槛。这里还补充一组对比，帮助判断这个观点什么时候成立，什么时候需要谨慎使用。</p>
+                <p>第三段提供行动建议和复盘问题，保证候选可以被选择并输出诊断。最后补充后续观察信号，让这段内容更接近真实课程文稿。为了让测试样本足够接近长文稿，这里继续加入一段说明：用户可以把这些观察信号写进每日笔记，并在下一次复盘时检查判断是否仍然成立。还可以把不同栏目中的相近观点串联起来，形成一个更稳定的主题索引。</p>
+                </article></body></html>
+                """,
+                encoding="utf-8",
+            )
+            stdout_buffer = io.BytesIO()
+            narrow_stdout = io.TextIOWrapper(stdout_buffer, encoding="cp1252", errors="strict")
+            with contextlib.redirect_stdout(narrow_stdout):
+                code = main(
+                    [
+                        "parse-snapshot",
+                        str(html),
+                        "--title",
+                        "健康参考",
+                        "--column",
+                        "栏目",
+                        "--url",
+                        "https://www.dedao.cn/course/detail?id=x",
+                        "--show-candidates",
+                    ]
+                )
+                narrow_stdout.flush()
+
+            self.assertEqual(code, 0)
+            self.assertIn(b"\\u5065\\u5eb7\\u53c2\\u8003", stdout_buffer.getvalue())
 
     def test_parse_snapshot_json_output(self):
         with tempfile.TemporaryDirectory() as tmp:

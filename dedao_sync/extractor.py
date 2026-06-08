@@ -39,6 +39,12 @@ PUBLISHED_META_KEYS = {
 }
 
 MEDIA_META_PREFIXES = ("og:audio", "og:video", "twitter:player")
+GENERIC_DEDAO_TITLE_MARKERS = (
+    "得到app",
+    "得到 app",
+    "知识就是力量",
+    "知识就在得到",
+)
 
 
 def _clean_visible_text(text: str) -> str:
@@ -52,6 +58,13 @@ def _clean_title(title: str) -> str:
     title = re.sub(r"\s+", " ", title).strip()
     title = re.split(r"\s*[-_|]\s*得到(?:App|网页版)?", title, maxsplit=1)[0].strip()
     return title
+
+
+def _is_generic_dedao_title(title: str) -> bool:
+    normalized = title.strip().lower()
+    if normalized in {"得到", "得到app", "得到 app", "得到网页版"}:
+        return True
+    return any(marker in normalized for marker in GENERIC_DEDAO_TITLE_MARKERS)
 
 
 class VisibleTextParser(HTMLParser):
@@ -372,14 +385,26 @@ class TranscriptExtractor:
             quality_reason=quality.reason,
         )
 
+    def from_ddarticle_payload(self, item: ContentItem, payload: dict) -> ContentDetail:
+        transcript = ddarticle_payload_to_transcript(payload)
+        quality = self.check_quality(item, transcript, require_title_related=False)
+        return ContentDetail(
+            item=item,
+            transcript_text=transcript if quality.ok else "",
+            has_transcript=quality.ok,
+            raw_html_hash=hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode("utf-8")).hexdigest(),
+            quality_reason=quality.reason,
+        )
+
     @staticmethod
     def _merge_metadata(item: ContentItem, metadata: ExtractedMetadata) -> ContentItem:
+        title = metadata.title if metadata.title and not _is_generic_dedao_title(metadata.title) else item.title
         return ContentItem(
             source_url=item.source_url,
             detail_url=item.detail_url,
             dedao_id=item.dedao_id,
             column_name=item.column_name,
-            title=metadata.title or item.title,
+            title=title,
             published_at=metadata.published_at or item.published_at,
             author=metadata.author or item.author,
             content_type=item.content_type,
@@ -396,7 +421,7 @@ class TranscriptExtractor:
             quality_reason=quality.reason,
         )
 
-    def check_quality(self, item: ContentItem, text: str) -> QualityResult:
+    def check_quality(self, item: ContentItem, text: str, *, require_title_related: bool = True) -> QualityResult:
         length = len(text)
         paragraphs = [line for line in text.split("\n\n") if line.strip()]
         paragraph_count = len(paragraphs)
@@ -408,8 +433,8 @@ class TranscriptExtractor:
             return QualityResult(False, "too_few_paragraphs", length, paragraph_count, noise_hits)
         if noise_ratio > self.max_noise_ratio:
             return QualityResult(False, "too_much_ui_noise", length, paragraph_count, noise_hits)
-        title_terms = [term for term in re.split(r"[\s·\-—：:，,。]+", item.title) if len(term) >= 2]
-        if title_terms and not any(term in text for term in title_terms[:4]):
+        title_terms = [term for term in re.split(r"[\s·\-—：:，,。？！!?｜|《》【】（）()]+", item.title) if len(term) >= 2]
+        if require_title_related and title_terms and not any(term in text for term in title_terms[:4]):
             return QualityResult(False, "title_not_related", length, paragraph_count, noise_hits)
         return QualityResult(True, None, length, paragraph_count, noise_hits)
 
@@ -453,3 +478,81 @@ class TranscriptExtractor:
         if quality.ok:
             score += 10000
         return score
+
+
+def ddarticle_payload_to_transcript(payload: dict) -> str:
+    container = payload.get("c")
+    if not isinstance(container, dict):
+        return ""
+    raw_content = container.get("content")
+    blocks = _parse_ddarticle_blocks(raw_content)
+    lines: list[str] = []
+    for block in blocks:
+        text = _ddarticle_block_text(block)
+        if text:
+            lines.append(text)
+    return normalize_transcript("\n\n".join(lines))
+
+
+def _parse_ddarticle_blocks(raw_content: object) -> list[object]:
+    if isinstance(raw_content, list):
+        return raw_content
+    if isinstance(raw_content, str):
+        raw_content = raw_content.strip()
+        if not raw_content:
+            return []
+        try:
+            parsed = json.loads(raw_content)
+        except json.JSONDecodeError:
+            return [{"type": "paragraph", "text": raw_content}]
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict):
+            return [parsed]
+    if isinstance(raw_content, dict):
+        return [raw_content]
+    return []
+
+
+def _ddarticle_block_text(block: object) -> str:
+    if isinstance(block, str):
+        return block.strip()
+    if not isinstance(block, dict):
+        return ""
+    block_type = str(block.get("type") or "").strip().lower()
+    if block_type in {"audio", "image", "video", "divider"}:
+        return ""
+    if block_type == "salutation":
+        return ""
+    text = block.get("text")
+    if isinstance(text, str) and text.strip():
+        return _clean_ddarticle_text(text)
+    contents = block.get("contents")
+    if isinstance(contents, list):
+        parts = [_ddarticle_inline_text(part) for part in contents]
+        return _clean_ddarticle_text("".join(part for part in parts if part))
+    return ""
+
+
+def _ddarticle_inline_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, dict):
+        return ""
+    text = value.get("text")
+    if isinstance(text, str):
+        return text
+    if isinstance(text, dict):
+        content = text.get("content")
+        if isinstance(content, str):
+            return content
+    contents = value.get("contents")
+    if isinstance(contents, list):
+        return "".join(_ddarticle_inline_text(part) for part in contents)
+    return ""
+
+
+def _clean_ddarticle_text(text: str) -> str:
+    text = text.replace("$_IGET_USER_NAME_$", "").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()

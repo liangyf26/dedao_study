@@ -75,6 +75,7 @@ dedao-sync login --config config.yaml
 dedao-sync inspect-page --config config.yaml "https://www.dedao.cn/course/detail?id=..."
 dedao-sync check --config config.yaml
 dedao-sync sync --config config.yaml --dry-run
+dedao-sync sync --config config.yaml --limit 3 --no-summary
 dedao-sync sync --config config.yaml
 dedao-sync retry-failed --config config.yaml
 dedao-sync resummarize --config config.yaml
@@ -86,7 +87,7 @@ dedao-sync list --config config.yaml --failed
 dedao-sync notify-test --config config.yaml
 ```
 
-`check` 会访问栏目列表并统计新内容，但不会写 Markdown，不会把新条目写入去重库，也不会发送飞书通知。`sync --dry-run` 同样不会写 Markdown 或发送飞书通知，适合在改配置、改栏目列表选择器后演练发现和去重流程。
+`check` 会访问栏目列表并统计新内容，但不会写 Markdown，不会把新条目写入去重库，也不会发送飞书通知。`sync --dry-run` 同样不会写 Markdown 或发送飞书通知，适合在改配置、改栏目列表选择器后演练发现和去重流程。首次正式同步可用 `sync --limit 3` 小批量处理；如果摘要服务临时不可用，可加 `--no-summary` 先写入全文稿，后续再用 `resummarize` 或 `retry-failed` 补摘要。
 
 `inspect-page` 会把页面 HTML 和可见文本保存到 `data/page_snapshots/`，用于登录后调试真实得到页面结构。
 

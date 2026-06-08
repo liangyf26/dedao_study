@@ -29,7 +29,7 @@ from .preflight import PreflightChecker
 from .repository import SyncRepository
 from .repository import row_to_content_item
 from .security import redact
-from .summarizer import SummaryError, create_summary_service
+from .summarizer import DisabledSummaryService, SummaryError, create_summary_service
 from .time_utils import now_local
 
 
@@ -120,6 +120,8 @@ def run_sync(
     summary_service=None,
     notifier: FeishuNotifier | None = None,
     send_notification: bool = True,
+    limit: int | None = None,
+    skip_summary: bool = False,
 ) -> tuple[RunReport, int]:
     config = load_config(config_path)
     log_path = setup_logging(config.root_dir)
@@ -178,7 +180,14 @@ def run_sync(
             return report, run_id
 
         writer = MarkdownWriter(config)
-        summary_service = summary_service or create_summary_service(config.summary)
+        if skip_summary:
+            LOGGER.info("summary disabled by command option")
+            summary_service = DisabledSummaryService()
+        else:
+            summary_service = summary_service or create_summary_service(config.summary)
+
+        processed_new_items = 0
+        limit_reached = False
 
         for column in enabled_columns:
             LOGGER.info("checking column: %s", column.name)
@@ -203,20 +212,37 @@ def run_sync(
                 continue
 
             report.discovered_count += len(crawl_result.items)
-            for item in crawl_result.items:
+            LOGGER.info("column discovered: %s items=%d", column.name, len(crawl_result.items))
+            for index, item in enumerate(crawl_result.items, start=1):
                 existing = repo.find_existing(item)
                 if existing:
                     report.skipped_count += 1
                     repo.add_run_item(run_id, int(existing["id"]), "skip", STATUS_SKIPPED, "already synced")
+                    LOGGER.info(
+                        "item %d/%d skipped: %s - %s (already synced)",
+                        index,
+                        len(crawl_result.items),
+                        column.name,
+                        item.title,
+                    )
                     continue
 
+                if limit is not None and processed_new_items >= limit:
+                    limit_reached = True
+                    LOGGER.info("sync limit reached: %d new item(s); stopping", limit)
+                    break
+
+                processed_new_items += 1
                 report.new_count += 1
+                LOGGER.info("item %d/%d new: %s - %s", index, len(crawl_result.items), column.name, item.title)
                 if dry_run:
                     report.skipped_count += 1
+                    LOGGER.info("dry-run skipped write: %s - %s", column.name, item.title)
                     continue
 
                 try:
                     report.request_count += 1
+                    LOGGER.info("fetching detail: %s - %s", column.name, item.title)
                     detail = crawler.fetch_detail(item)
                     synced_item = detail.item
                     if is_policy_blocked(detail):
@@ -231,6 +257,7 @@ def run_sync(
                         repo.add_run_item(run_id, item_id, "policy", STATUS_POLICY_BLOCKED, failure_message)
                         report.failed_count += 1
                         report.failures.append(redact(f"{synced_item.column_name}/{synced_item.title}: {failure_message}"))
+                        LOGGER.warning("policy blocked: %s - %s: %s", synced_item.column_name, synced_item.title, failure_message)
                         continue
                     if not detail.has_transcript:
                         status = STATUS_EXTRACTOR_FAILED if detail.quality_reason else STATUS_MISSING_TRANSCRIPT
@@ -245,6 +272,7 @@ def run_sync(
                         repo.add_run_item(run_id, item_id, "extract", status, failure_message)
                         report.missing_transcript_count += 1
                         add_report_item(report.missing_by_column, synced_item.column_name, synced_item.title, failure_message)
+                        LOGGER.warning("missing transcript: %s - %s: %s", synced_item.column_name, synced_item.title, failure_message)
                         continue
 
                     digest = content_hash(detail.transcript_text)
@@ -258,10 +286,12 @@ def run_sync(
                             STATUS_SKIPPED,
                             "duplicate content_hash",
                         )
+                        LOGGER.info("duplicate content skipped: %s - %s", synced_item.column_name, synced_item.title)
                         continue
 
                     summary_status = "disabled"
                     try:
+                        LOGGER.info("summarizing: %s - %s chars=%d", synced_item.column_name, synced_item.title, len(detail.transcript_text))
                         summary = summary_service.summarize(detail)
                         summary_status = summary.status
                     except SummaryError as exc:
@@ -273,6 +303,7 @@ def run_sync(
                         add_report_item(report.summary_failed_by_column, synced_item.column_name, synced_item.title, exc)
                         LOGGER.warning("summary failed for %s: %s", item.title, exc)
 
+                    LOGGER.info("writing note: %s - %s", synced_item.column_name, synced_item.title)
                     path = writer.write(detail, summary)
                     status = STATUS_SYNCED if summary_status != STATUS_SUMMARY_FAILED else STATUS_SUMMARY_FAILED
                     item_id = repo.upsert_item(
@@ -286,6 +317,7 @@ def run_sync(
                     repo.add_run_item(run_id, item_id, "sync", status, str(path))
                     report.success_count += 1
                     report.added_by_column.setdefault(column.name, []).append(synced_item.title)
+                    LOGGER.info("synced: %s - %s -> %s", synced_item.column_name, synced_item.title, path)
                 except Exception as exc:
                     safe_error = redact(exc)
                     item_id = repo.upsert_item(item, status=STATUS_FAILED, error_message=safe_error)
@@ -293,6 +325,8 @@ def run_sync(
                     report.failed_count += 1
                     report.failures.append(redact(f"{column.name}/{item.title}: {exc}"))
                     LOGGER.exception("item failed: %s", item.title)
+            if limit_reached:
+                break
 
         report.status = final_run_status(report)
         return report, run_id

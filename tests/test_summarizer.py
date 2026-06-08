@@ -11,6 +11,7 @@ from dedao_sync.summarizer import (
     OpenAICompatibleSummaryService,
     SummaryError,
     build_summary_prompt,
+    chat_completions_url,
     finalize_summary_result,
     parse_summary_text,
 )
@@ -125,6 +126,8 @@ class SummarizerTests(unittest.TestCase):
             captured["url"] = request.full_url
             captured["auth"] = request.get_header("Authorization")
             captured["content_type"] = request.get_header("Content-type")
+            captured["accept"] = request.get_header("Accept")
+            captured["user_agent"] = request.get_header("User-agent")
             captured["timeout"] = timeout
             captured["payload"] = json.loads(request.data.decode("utf-8"))
             return FakeHttpResponse(
@@ -157,11 +160,19 @@ class SummarizerTests(unittest.TestCase):
         self.assertEqual(captured["url"], "https://api.example.com/v1/chat/completions")
         self.assertEqual(captured["auth"], "Bearer sk-test-secret")
         self.assertEqual(captured["content_type"], "application/json")
+        self.assertEqual(captured["accept"], "application/json")
+        self.assertEqual(captured["user_agent"], "dedao-sync/0.1")
         self.assertEqual(captured["timeout"], 7)
         self.assertEqual(captured["payload"]["model"], "deepseek-v4-pro")
         self.assertIn("只输出 JSON", captured["payload"]["messages"][1]["content"])
         self.assertEqual(result.atomic_cards, ("卡片",))
         self.assertEqual(result.keywords, ("关键词",))
+
+    def test_chat_completions_url_accepts_full_endpoint(self):
+        self.assertEqual(
+            chat_completions_url("https://api.example.com/v1/chat/completions"),
+            "https://api.example.com/v1/chat/completions",
+        )
 
     def test_openai_compatible_service_redacts_http_error_body(self):
         config = make_summary_config()
@@ -185,6 +196,42 @@ class SummarizerTests(unittest.TestCase):
         self.assertIn("[REDACTED]", message)
         self.assertNotIn("sk-live-secret", message)
         self.assertNotIn("abc.def", message)
+
+    def test_openai_compatible_service_adds_provider_hint_for_403_1010(self):
+        config = make_summary_config()
+        item = ContentItem("https://example.com/1", "栏目", "标题", "https://example.com/1")
+        detail = ContentDetail(item=item, transcript_text="正文", has_transcript=True)
+        error = urllib.error.HTTPError(
+            "https://opencode.ai/zen/go/v1/chat/completions",
+            403,
+            "Forbidden",
+            hdrs=None,
+            fp=io.BytesIO(b"error code: 1010"),
+        )
+
+        with mock.patch.dict("os.environ", {"BASE": "https://opencode.ai/zen/go/v1", "KEY": "sk-test-secret"}, clear=False):
+            with mock.patch("urllib.request.urlopen", side_effect=error):
+                with self.assertRaises(SummaryError) as raised:
+                    OpenAICompatibleSummaryService(config).summarize(detail)
+
+        message = str(raised.exception)
+        self.assertIn("summary API HTTP 403", message)
+        self.assertIn("provider=opencode_go", message)
+        self.assertIn("model=deepseek-v4-pro", message)
+        self.assertIn("error code: 1010", message)
+        self.assertIn("provider denied or blocked", message)
+
+    def test_openai_compatible_service_wraps_timeout_as_summary_error(self):
+        config = make_summary_config()
+        item = ContentItem("https://example.com/1", "栏目", "标题", "https://example.com/1")
+        detail = ContentDetail(item=item, transcript_text="正文", has_transcript=True)
+
+        with mock.patch.dict("os.environ", {"BASE": "https://api.example.com/v1", "KEY": "sk-test-secret"}, clear=False):
+            with mock.patch("urllib.request.urlopen", side_effect=TimeoutError("read timed out")):
+                with self.assertRaises(SummaryError) as raised:
+                    OpenAICompatibleSummaryService(config, timeout_seconds=12).summarize(detail)
+
+        self.assertIn("summary API timeout after 12s", str(raised.exception))
 
 
 def make_summary_config():

@@ -151,6 +151,116 @@ class CrawlerTests(unittest.TestCase):
             self.assertEqual(DedaoCrawler.jittered_delay_seconds(0), 0)
             uniform.assert_not_called()
 
+    def test_items_from_vue_articles_builds_article_urls(self):
+        items = DedaoCrawler.items_from_vue_articles(
+            ColumnConfig("健康参考", "https://www.dedao.cn/course/detail?id=course"),
+            [
+                {
+                    "title": "001｜不胖也要警惕内脏脂肪",
+                    "enid": "article-enid",
+                    "id": "119993",
+                    "publishTime": 1780588800,
+                }
+            ],
+        )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].detail_url, "https://www.dedao.cn/course/article?id=article-enid")
+        self.assertEqual(items[0].dedao_id, "article-enid")
+        self.assertEqual(items[0].title, "001｜不胖也要警惕内脏脂肪")
+        self.assertEqual(items[0].published_at, "2026-06-05")
+        self.assertEqual(items[0].column_name, "健康参考")
+
+    def test_items_from_vue_articles_skips_entries_without_url_or_enid(self):
+        items = DedaoCrawler.items_from_vue_articles(
+            ColumnConfig("健康参考", "https://www.dedao.cn/course/detail?id=course"),
+            [
+                {"title": "只有标题没有链接", "id": "119993", "publishTime": 1780588800},
+                {"title": "有外部 URL", "url": "/course/article?id=abc"},
+            ],
+        )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].detail_url, "https://www.dedao.cn/course/article?id=abc")
+
+    def test_items_from_aiquan_articles_builds_www_article_urls(self):
+        items = DedaoCrawler.items_from_aiquan_articles(
+            ColumnConfig("快刀青衣·快刀广播站", "https://aiquan.dedao.cn/courseList?type=1"),
+            [
+                {
+                    "title": "873｜周日荐文：Anthropic 万字长文",
+                    "enid": "2Mo65zY4QZ3VnmWBP1KqEdNAa98jGB",
+                    "id": "6000802",
+                    "publishTime": 1780761600,
+                }
+            ],
+        )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].detail_url, "https://www.dedao.cn/course/article?id=2Mo65zY4QZ3VnmWBP1KqEdNAa98jGB")
+        self.assertEqual(items[0].dedao_id, "2Mo65zY4QZ3VnmWBP1KqEdNAa98jGB")
+        self.assertEqual(items[0].published_at, "2026-06-07")
+        self.assertEqual(items[0].column_name, "快刀青衣·快刀广播站")
+
+    def test_items_from_aiquan_articles_requires_enid(self):
+        items = DedaoCrawler.items_from_aiquan_articles(
+            ColumnConfig("快刀青衣·快刀广播站", "https://aiquan.dedao.cn/courseList?type=1"),
+            [{"title": "873｜没有 enid", "id": "6000802"}],
+        )
+
+        self.assertEqual(items, [])
+
+    def test_capture_aiquan_article_response_keeps_minimal_fields(self):
+        class FakeResponse:
+            url = "https://aiquan.dedao.cn/aichannel/sphere/v1/app/special/article_list"
+
+            def json(self):
+                return {
+                    "c": {
+                        "article_list": [
+                            {
+                                "id": 6000802,
+                                "en_id": "2Mo65zY4QZ3VnmWBP1KqEdNAa98jGB",
+                                "title": "873｜周日荐文",
+                                "publish_time": 1780761600,
+                                "audio": {
+                                    "mp3_play_url": "https://example.com/protected.m4a",
+                                    "title": "音频标题",
+                                },
+                            }
+                        ]
+                    }
+                }
+
+        output = []
+        DedaoCrawler._capture_aiquan_article_response(FakeResponse(), output)
+
+        self.assertEqual(
+            output,
+            [
+                {
+                    "enid": "2Mo65zY4QZ3VnmWBP1KqEdNAa98jGB",
+                    "id": 6000802,
+                    "title": "873｜周日荐文",
+                    "publishTime": 1780761600,
+                }
+            ],
+        )
+
+    def test_capture_ddarticle_response_keeps_payload(self):
+        payload = {"c": {"article": {}, "content": "[]"}}
+
+        class FakeResponse:
+            url = "https://www.dedao.cn/pc/ddarticle/v1/article/get/v2?token=abc"
+
+            def json(self):
+                return payload
+
+        output = []
+        DedaoCrawler._capture_ddarticle_response(FakeResponse(), output)
+
+        self.assertEqual(output, [payload])
+
 
 if __name__ == "__main__":
     unittest.main()
