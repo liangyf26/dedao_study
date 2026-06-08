@@ -87,7 +87,37 @@ class SummarizerTests(unittest.TestCase):
         prompt = build_summary_prompt(detail)
         self.assertIn("只输出 JSON", prompt)
         self.assertIn("基于截断原文", prompt)
-        self.assertLess(len(prompt), 32200)
+        self.assertLess(len(prompt), 22200)
+
+    def test_parse_repairable_truncated_json_cards(self):
+        result = parse_summary_text(
+            """{
+              "atomic_cards": [
+                "人生有三件事算不准，但人们每天都在算。",
+                "按价值观选择的人从不后悔。"
+              ）"""
+        )
+
+        self.assertEqual(
+            result.atomic_cards,
+            (
+                "人生有三件事算不准，但人们每天都在算。",
+                "按价值观选择的人从不后悔。",
+            ),
+        )
+
+    def test_parse_repairable_truncated_json_multiple_fields(self):
+        result = parse_summary_text(
+            """{
+              "atomic_cards": ["卡片一", "卡片二"],
+              "permanent_note": "永久笔记",
+              "keywords": ["身份", "选择"
+            """
+        )
+
+        self.assertEqual(result.atomic_cards, ("卡片一", "卡片二"))
+        self.assertEqual(result.permanent_note, "永久笔记")
+        self.assertEqual(result.keywords, ("身份", "选择"))
 
     def test_finalize_summary_adds_truncation_notice_when_model_omits_it(self):
         item = ContentItem("u", "栏目", "标题", "u")
@@ -164,6 +194,7 @@ class SummarizerTests(unittest.TestCase):
         self.assertEqual(captured["user_agent"], "dedao-sync/0.1")
         self.assertEqual(captured["timeout"], 7)
         self.assertEqual(captured["payload"]["model"], "deepseek-v4-pro")
+        self.assertEqual(captured["payload"]["max_tokens"], 2200)
         self.assertIn("只输出 JSON", captured["payload"]["messages"][1]["content"])
         self.assertEqual(result.atomic_cards, ("卡片",))
         self.assertEqual(result.keywords, ("关键词",))
@@ -228,10 +259,41 @@ class SummarizerTests(unittest.TestCase):
 
         with mock.patch.dict("os.environ", {"BASE": "https://api.example.com/v1", "KEY": "sk-test-secret"}, clear=False):
             with mock.patch("urllib.request.urlopen", side_effect=TimeoutError("read timed out")):
-                with self.assertRaises(SummaryError) as raised:
-                    OpenAICompatibleSummaryService(config, timeout_seconds=12).summarize(detail)
+                with mock.patch("dedao_sync.summarizer.time.sleep"):
+                    with self.assertRaises(SummaryError) as raised:
+                        OpenAICompatibleSummaryService(config, timeout_seconds=12).summarize(detail)
 
         self.assertIn("summary API timeout after 12s", str(raised.exception))
+
+    def test_openai_compatible_service_retries_empty_message_content(self):
+        config = make_summary_config()
+        item = ContentItem("https://example.com/1", "栏目", "标题", "https://example.com/1")
+        detail = ContentDetail(item=item, transcript_text="正文", has_transcript=True)
+        responses = [
+            FakeHttpResponse({"choices": [{"message": {"content": ""}}]}),
+            FakeHttpResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {"atomic_cards": ["卡片"], "permanent_note": "笔记"},
+                                    ensure_ascii=False,
+                                )
+                            }
+                        }
+                    ]
+                }
+            ),
+        ]
+
+        with mock.patch.dict("os.environ", {"BASE": "https://api.example.com/v1", "KEY": "sk-test-secret"}, clear=False):
+            with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen:
+                with mock.patch("dedao_sync.summarizer.time.sleep"):
+                    result = OpenAICompatibleSummaryService(config).summarize(detail)
+
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertEqual(result.atomic_cards, ("卡片",))
 
 
 def make_summary_config():

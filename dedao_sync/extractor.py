@@ -315,8 +315,12 @@ def extract_media_candidates(html: str, base_url: str) -> tuple[MediaCandidate, 
 def html_to_candidate_texts(html: str) -> list[str]:
     parser = TextBlockParser()
     parser.feed(html)
+    visible_text = html_to_visible_text(html)
     candidates = [normalize_transcript(block) for block in parser.blocks]
-    candidates.append(normalize_transcript(html_to_visible_text(html)))
+    transcript_section = extract_dedao_transcript_section(visible_text)
+    if transcript_section:
+        candidates.insert(0, normalize_transcript(transcript_section))
+    candidates.append(normalize_transcript(visible_text))
     unique: list[str] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -324,6 +328,36 @@ def html_to_candidate_texts(html: str) -> list[str]:
             seen.add(candidate)
             unique.append(candidate)
     return unique
+
+
+def extract_dedao_transcript_section(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines()]
+    start = _first_line_index(lines, "全文稿")
+    if start is None:
+        return ""
+    end_markers = {
+        "发布",
+        "公开",
+        "写留言，与作者互动",
+        "联系我们：",
+        "相关链接：",
+        "了解更多：",
+    }
+    contains_end_markers = ("0 / 5000", "收起 取消 写笔记")
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if line in end_markers or any(marker in line for marker in contains_end_markers):
+            end = index
+            break
+    return "\n".join(line for line in lines[start + 1 : end] if line)
+
+
+def _first_line_index(lines: list[str], value: str) -> int | None:
+    for index, line in enumerate(lines):
+        if line == value:
+            return index
+    return None
 
 
 def normalize_transcript(text: str) -> str:
@@ -365,6 +399,13 @@ class TranscriptExtractor:
     def from_html(self, item: ContentItem, html: str) -> ContentDetail:
         item = self._merge_metadata(item, extract_metadata(html))
         media_candidates = extract_media_candidates(html, item.detail_url or item.source_url)
+        visible_text = html_to_visible_text(html)
+        transcript_section = normalize_transcript(extract_dedao_transcript_section(visible_text))
+        section_quality = (
+            self.check_quality(item, transcript_section, require_title_related=False, max_noise_ratio=0.3)
+            if transcript_section
+            else QualityResult(False, "empty", 0, 0, 0)
+        )
         text, quality = self.select_best_candidate(item, html_to_candidate_texts(html))
         policy = check_page_policy(html, media_candidates)
         if not policy.allowed:
@@ -375,6 +416,15 @@ class TranscriptExtractor:
                 media_candidates=media_candidates,
                 raw_html_hash=hashlib.sha256(html.encode("utf-8")).hexdigest(),
                 quality_reason=f"policy_blocked:{policy.reason}",
+            )
+        if section_quality.ok:
+            return ContentDetail(
+                item=item,
+                transcript_text=transcript_section,
+                has_transcript=True,
+                media_candidates=media_candidates,
+                raw_html_hash=hashlib.sha256(html.encode("utf-8")).hexdigest(),
+                quality_reason=None,
             )
         return ContentDetail(
             item=item,
@@ -421,7 +471,14 @@ class TranscriptExtractor:
             quality_reason=quality.reason,
         )
 
-    def check_quality(self, item: ContentItem, text: str, *, require_title_related: bool = True) -> QualityResult:
+    def check_quality(
+        self,
+        item: ContentItem,
+        text: str,
+        *,
+        require_title_related: bool = True,
+        max_noise_ratio: float | None = None,
+    ) -> QualityResult:
         length = len(text)
         paragraphs = [line for line in text.split("\n\n") if line.strip()]
         paragraph_count = len(paragraphs)
@@ -431,7 +488,8 @@ class TranscriptExtractor:
             return QualityResult(False, "too_short", length, paragraph_count, noise_hits)
         if paragraph_count < self.min_paragraphs:
             return QualityResult(False, "too_few_paragraphs", length, paragraph_count, noise_hits)
-        if noise_ratio > self.max_noise_ratio:
+        allowed_noise_ratio = self.max_noise_ratio if max_noise_ratio is None else max_noise_ratio
+        if noise_ratio > allowed_noise_ratio:
             return QualityResult(False, "too_much_ui_noise", length, paragraph_count, noise_hits)
         title_terms = [term for term in re.split(r"[\s·\-—：:，,。？！!?｜|《》【】（）()]+", item.title) if len(term) >= 2]
         if require_title_related and title_terms and not any(term in text for term in title_terms[:4]):

@@ -6,6 +6,7 @@ import unittest
 from dedao_sync.extractor import (
     TranscriptExtractor,
     ddarticle_payload_to_transcript,
+    extract_dedao_transcript_section,
     extract_media_candidates,
     extract_metadata,
     html_to_candidate_texts,
@@ -263,6 +264,50 @@ class ExtractorTests(unittest.TestCase):
         html = "<main><p>健康参考</p><p>第一段</p><p>第二段</p></main><footer>分享</footer>"
         candidates = html_to_candidate_texts(html)
         self.assertGreaterEqual(len(candidates), 2)
+
+    def test_extract_dedao_transcript_section_from_visible_text(self):
+        text = "\n".join(
+            [
+                "内容介绍",
+                "介绍文字",
+                "全文稿",
+                "脱不花：第一段正文，包含足够完整的信息。",
+                "嘉宾：第二段继续展开观点。",
+                "发布",
+                "公开",
+                "0 / 5000",
+            ]
+        )
+
+        transcript = extract_dedao_transcript_section(text)
+
+        self.assertIn("第一段正文", transcript)
+        self.assertIn("第二段继续", transcript)
+        self.assertNotIn("内容介绍", transcript)
+        self.assertNotIn("发布", transcript)
+
+    def test_from_html_prefers_dedao_transcript_section_over_noisy_page(self):
+        item = ContentItem(
+            source_url="https://www.dedao.cn/course/article?id=abc",
+            detail_url="https://www.dedao.cn/course/article?id=abc",
+            column_name="脱不花·长谈",
+            title="马年新春特别版｜春，是谈出来的",
+        )
+        transcript = "\n".join(
+            [
+                "脱不花：欢迎来到长谈，今天这一期先交代背景、事实和判断依据，形成足够完整的第一段正文内容。",
+                "嘉宾：第二段继续展开核心观点，说明适用边界、可能例外，以及为什么不能把这个结论简单套用。",
+                "脱不花：第三段给出行动建议和复盘问题，帮助读者把内容转化成后续可以观察的笔记。",
+            ]
+        )
+        noise = "登录 扫码 下载App 相关推荐 分享 收藏 评论 购买 加入学习 " * 30
+        html = f"<html><body><nav>{noise}</nav><div>全文稿</div><p>{transcript}</p><div>发布</div><footer>{noise}</footer></body></html>"
+
+        detail = TranscriptExtractor(min_length=120, min_paragraphs=3).from_html(item, html)
+
+        self.assertTrue(detail.has_transcript)
+        self.assertIn("欢迎来到长谈", detail.transcript_text)
+        self.assertNotIn("下载App", detail.transcript_text)
 
 
 if __name__ == "__main__":

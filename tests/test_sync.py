@@ -700,6 +700,36 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(SyncRepository(default_db_path(root)).list_items()[0]["status"], STATUS_SYNCED)
             logging.shutdown()
 
+    def test_resummarize_failure_preserves_transcript_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            repo = SyncRepository(default_db_path(root))
+            repo.migrate()
+            note_dir = root / "vault" / "得到" / "栏目"
+            note_dir.mkdir(parents=True)
+            note = note_dir / "栏目-2026-05-27-健康参考.md"
+            note.write_text("# 标题\n\n## 全文稿\n\n健康参考\n\n第一段内容很长。\n\n第二段继续展开。\n\n第三段补充。", encoding="utf-8")
+            item = ContentItem("https://example.com/sf-rs", "栏目", "健康参考", "https://example.com/sf-rs", dedao_id="sf-rs")
+            repo.upsert_item(
+                item,
+                status=STATUS_SUMMARY_FAILED,
+                content_hash="hash-sf-rs",
+                file_path=note,
+                has_transcript=True,
+                summary_status=STATUS_SUMMARY_FAILED,
+            )
+
+            report, _ = run_resummarize(config_path, summary_service=FailingSummary(), notifier=FakeNotifier())
+
+            self.assertEqual(report.status, "partial_failed")
+            row = SyncRepository(default_db_path(root)).list_items()[0]
+            self.assertEqual(row["status"], STATUS_SUMMARY_FAILED)
+            self.assertEqual(row["summary_status"], STATUS_SUMMARY_FAILED)
+            self.assertEqual(row["has_transcript"], 1)
+            self.assertEqual(row["file_path"], str(note))
+            logging.shutdown()
+
     def test_resummarize_default_skips_successful_summaries(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

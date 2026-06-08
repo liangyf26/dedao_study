@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import socket
+import time
 from pathlib import Path
 
 from .config import load_config
@@ -34,6 +35,16 @@ from .time_utils import now_local
 
 
 LOGGER = logging.getLogger(__name__)
+
+TRANSIENT_ERROR_PATTERNS = (
+    "sslv3_alert_bad_record_mac",
+    "bad record mac",
+    "connection reset",
+    "econnreset",
+    "net::err_http2_protocol_error",
+    "net::err_connection",
+    "temporarily unavailable",
+)
 
 
 def default_db_path(root_dir: Path) -> Path:
@@ -77,6 +88,34 @@ def add_report_item(bucket: dict[str, list[str]], column: str, title: str, note:
     if note:
         text = f"{title}（{redact(note)}）"
     bucket.setdefault(column, []).append(text)
+
+
+def is_transient_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(pattern in message for pattern in TRANSIENT_ERROR_PATTERNS)
+
+
+def fetch_detail_with_retry(crawler: DedaoCrawler, item, report: RunReport, *, attempts: int = 2) -> ContentDetail:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        report.request_count += 1
+        try:
+            LOGGER.info("fetching detail: %s - %s", item.column_name, item.title)
+            return crawler.fetch_detail(item)
+        except Exception as exc:
+            last_error = exc
+            if attempt >= attempts or not is_transient_error(exc):
+                raise
+            LOGGER.warning(
+                "transient detail fetch failed, retrying: %s - %s: %s",
+                item.column_name,
+                item.title,
+                redact(exc),
+            )
+            time.sleep(2 * attempt)
+    if last_error:
+        raise last_error
+    raise RuntimeError("detail fetch failed without an exception")
 
 
 def run_preflight(config_path: str | Path = "config.yaml", *, require_auth: bool = True) -> tuple[RunReport, int | None]:
@@ -241,9 +280,7 @@ def run_sync(
                     continue
 
                 try:
-                    report.request_count += 1
-                    LOGGER.info("fetching detail: %s - %s", column.name, item.title)
-                    detail = crawler.fetch_detail(item)
+                    detail = fetch_detail_with_retry(crawler, item, report)
                     synced_item = detail.item
                     if is_policy_blocked(detail):
                         failure_message = detail_failure_message(detail)
@@ -427,7 +464,15 @@ def run_retry_failed(
                         except SummaryError as exc:
                             report.summary_failed_count += 1
                             add_report_item(report.summary_failed_by_column, item.column_name, item.title, exc)
-                            repo.upsert_item(item, status=STATUS_SUMMARY_FAILED, error_message=redact(exc))
+                            repo.upsert_item(
+                                item,
+                                status=STATUS_SUMMARY_FAILED,
+                                content_hash=row["content_hash"],
+                                file_path=path,
+                                has_transcript=True,
+                                summary_status=STATUS_SUMMARY_FAILED,
+                                error_message=redact(exc),
+                            )
                             repo.add_run_item(run_id, int(row["id"]), "retry-summary", STATUS_SUMMARY_FAILED, redact(exc))
                             LOGGER.warning("summary failed for retry %s: %s", item.title, exc)
                             continue
@@ -445,8 +490,7 @@ def run_retry_failed(
                         report.added_by_column.setdefault(item.column_name, []).append(item.title)
                         continue
 
-                report.request_count += 1
-                detail = crawler.fetch_detail(item)
+                detail = fetch_detail_with_retry(crawler, item, report)
                 synced_item = detail.item
                 if is_policy_blocked(detail):
                     failure_message = detail_failure_message(detail)
@@ -589,7 +633,15 @@ def run_resummarize(
                 report.added_by_column.setdefault(item.column_name, []).append(item.title)
             except Exception as exc:
                 safe_error = redact(exc)
-                repo.upsert_item(item, status=STATUS_SUMMARY_FAILED, error_message=safe_error)
+                repo.upsert_item(
+                    item,
+                    status=STATUS_SUMMARY_FAILED,
+                    content_hash=row["content_hash"],
+                    file_path=path,
+                    has_transcript=bool(row["has_transcript"] or path.exists()),
+                    summary_status=STATUS_SUMMARY_FAILED,
+                    error_message=safe_error,
+                )
                 repo.add_run_item(run_id, int(row["id"]), "resummarize", STATUS_SUMMARY_FAILED, safe_error)
                 report.failed_count += 1
                 report.summary_failed_count += 1
