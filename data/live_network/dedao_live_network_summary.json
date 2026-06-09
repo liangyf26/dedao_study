@@ -1,0 +1,756 @@
+[
+  {
+    "url": "https://www.dedao.cn/live/detail?id=Ag7Lr52RgE9yJKMmGAv8WVnXwlbebTX03D5AE6zoQd4jbYlx03NkeDz16ZaoBOqe",
+    "status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "media_like": false
+  },
+  {
+    "url": "blob:https://www.dedao.cn/4d1cc861-eab0-4a07-9adc-cdd72d6010ac",
+    "status": 200,
+    "content_type": "application/javascript",
+    "media_like": false
+  },
+  {
+    "url": "https://www.dedao.cn/pc/sunflower/v1/module/list?module_type=search%2Cfoot",
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "media_like": false,
+    "top_keys": [
+      "c",
+      "h"
+    ],
+    "keyword_fields": [
+      {
+        "path": "c.list[0].title",
+        "preview": "更好用的搜索"
+      },
+      {
+        "path": "c.list[0].description",
+        "preview": "不仅能搜标题，还能搜索全文文稿内容"
+      },
+      {
+        "path": "c.list[1].title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[1].description",
+        "preview": ""
+      }
+    ]
+  },
+  {
+    "url": "https://www.dedao.cn/pc/ddlive/v2/pc/live/base",
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "media_like": false,
+    "top_keys": [
+      "c",
+      "h"
+    ],
+    "keyword_fields": [
+      {
+        "path": "c.live_lecture_list",
+        "preview": "[{\"teacher_uid\": 546982, \"teacher_name\": \"罗振宇\", \"teacher_intro\": \"得到创始人\", \"avatar\": \"http://piccdn.umiwi.com/uploader/avatar/2019-11-29/1778176d04400000.jpg\", \"profile_url\": \"igeta..."
+      },
+      {
+        "path": "c.live_outline",
+        "preview": "{\"title\": \"直播大纲\", \"content\": \"\", \"topic_list\": null}"
+      },
+      {
+        "path": "c.live_outline.title",
+        "preview": "直播大纲"
+      },
+      {
+        "path": "c.live_outline.content",
+        "preview": ""
+      },
+      {
+        "path": "c.title",
+        "preview": "得到十周年·AI知识发布会"
+      },
+      {
+        "path": "c.share_title",
+        "preview": "得到十周年｜全新AI产品「得到大脑」正式发布"
+      },
+      {
+        "path": "c.live_series_ids",
+        "preview": ""
+      },
+      {
+        "path": "c.playback_duration_text",
+        "preview": "05:06:15"
+      },
+      {
+        "path": "c.live_serires_info",
+        "preview": "null"
+      },
+      {
+        "path": "c.live_type",
+        "preview": "public"
+      },
+      {
+        "path": "c.next_live_id",
+        "preview": "0"
+      },
+      {
+        "path": "c.live_pv",
+        "preview": "243589"
+      },
+      {
+        "path": "c.live_viewers",
+        "preview": "243589"
+      },
+      {
+        "path": "c.is_privilege_live",
+        "preview": "false"
+      },
+      {
+        "path": "c.author_text",
+        "preview": "主讲人"
+      },
+      {
+        "path": "c.live_article_info",
+        "preview": "{\"article_id\": 0, \"article_detail_ddurl\": \"\", \"article_alias_id\": \"\", \"article_ptype_alias_id\": \"\"}"
+      },
+      {
+        "path": "c.live_activity_info",
+        "preview": "{\"live_activity_ddurl\": \"\", \"live_activity_type\": 0, \"live_playback_disabled\": 0, \"live_activity_id\": \"\"}"
+      },
+      {
+        "path": "c.live_activity_info.live_activity_ddurl",
+        "preview": ""
+      },
+      {
+        "path": "c.live_activity_info.live_activity_type",
+        "preview": "0"
+      },
+      {
+        "path": "c.live_activity_info.live_playback_disabled",
+        "preview": "0"
+      },
+      {
+        "path": "c.live_activity_info.live_activity_id",
+        "preview": ""
+      },
+      {
+        "path": "c.is_activity_live",
+        "preview": "false"
+      },
+      {
+        "path": "c.live_uv",
+        "preview": "75592"
+      },
+      {
+        "path": "c.live_medal_module",
+        "preview": "null"
+      },
+      {
+        "path": "c.live_privilege_type",
+        "preview": "0"
+      },
+      {
+        "path": "c.live_record_num",
+        "preview": ""
+      },
+      {
+        "path": "c.live_dp_code",
+        "preview": "luojilab"
+      },
+      {
+        "path": "c.live_outliner_list",
+        "preview": "[]"
+      },
+      {
+        "path": "c.live_outline_topic_list",
+        "preview": "null"
+      },
+      {
+        "path": "c.live_dp_name",
+        "preview": "公司"
+      }
+    ]
+  },
+  {
+    "url": "https://www.dedao.cn/api/search/pc/hot",
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "media_like": false,
+    "top_keys": [
+      "c",
+      "h"
+    ],
+    "keyword_fields": [
+      {
+        "path": "c.hot_tab_list[0].list[0].title",
+        "preview": "AI 学习圈"
+      },
+      {
+        "path": "c.hot_tab_list[0].list[0].subTitle",
+        "preview": "快刀广播站天天聊AI"
+      },
+      {
+        "path": "c.hot_tab_list[0].list[1].title",
+        "preview": "贾行家·年度人文课堂"
+      },
+      {
+        "path": "c.hot_tab_list[0].list[1].subTitle",
+        "preview": "重磅上新！"
+      },
+      {
+        "path": "c.hot_tab_list[0].list[2].title",
+        "preview": "《长谈》× 脱不花"
+      },
+      {
+        "path": "c.hot_tab_list[0].list[2].subTitle",
+        "preview": "免费周更栏目更新啦"
+      },
+      {
+        "path": "c.hot_tab_list[0].list[3].title",
+        "preview": "《王路·金刚经50讲》"
+      },
+      {
+        "path": "c.hot_tab_list[0].list[3].subTitle",
+        "preview": "重磅上新！"
+      }
+    ]
+  },
+  {
+    "url": "https://www.dedao.cn/pc/ddlive/v2/pc/live/roomDetail",
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "media_like": false,
+    "top_keys": [
+      "c",
+      "h"
+    ],
+    "keyword_fields": [
+      {
+        "path": "c.title",
+        "preview": "得到十周年·AI知识发布会"
+      },
+      {
+        "path": "c.share_title",
+        "preview": "得到十周年｜全新AI产品「得到大脑」正式发布"
+      },
+      {
+        "path": "c.livetype",
+        "preview": "0"
+      },
+      {
+        "path": "c.live_privilege_tips",
+        "preview": ""
+      },
+      {
+        "path": "c.live_series_ids",
+        "preview": ""
+      },
+      {
+        "path": "c.live_serires_info",
+        "preview": "null"
+      },
+      {
+        "path": "c.live_duration",
+        "preview": "18313"
+      },
+      {
+        "path": "c.live_duration_text",
+        "preview": "305分钟13秒"
+      },
+      {
+        "path": "c.playback_info.duration_text",
+        "preview": "05:06:15"
+      },
+      {
+        "path": "c.playback_info.playback_video_transcoding_text",
+        "preview": "回放视频正在制作中，请稍后观看"
+      },
+      {
+        "path": "c.playback_info.caption",
+        "preview": ""
+      },
+      {
+        "path": "c.playback_info.caption_vtt",
+        "preview": "null"
+      },
+      {
+        "path": "c.playback_info.caption_position",
+        "preview": "0"
+      },
+      {
+        "path": "c.playback_info.vtt_url",
+        "preview": ""
+      },
+      {
+        "path": "c.live_privilege_type",
+        "preview": "0"
+      },
+      {
+        "path": "c.report_data_live",
+        "preview": "{\"base_item_id\": \"5546\", \"base_item_type\": \"live\", \"main_item_id\": \"5546\", \"main_item_type\": \"\", \"product_id\": 0, \"product_type\": 730, \"product_id_str\": \"lGnjGEzBOlkWerKdnLq7ZV38NP..."
+      },
+      {
+        "path": "c.live_pv",
+        "preview": "243589"
+      },
+      {
+        "path": "c.live_share_number",
+        "preview": "40918"
+      },
+      {
+        "path": "c.live_viewers",
+        "preview": "243589"
+      },
+      {
+        "path": "c.is_privilege_live",
+        "preview": "false"
+      },
+      {
+        "path": "c.PrivilegeProduct.title",
+        "preview": ""
+      },
+      {
+        "path": "c.PrivilegeProduct.live_start_time",
+        "preview": "0"
+      },
+      {
+        "path": "c.PrivilegeProduct.live_id",
+        "preview": "0"
+      },
+      {
+        "path": "c.PrivilegeProduct.is_privilege_live",
+        "preview": "false"
+      },
+      {
+        "path": "c.privilege_live_tag",
+        "preview": ""
+      },
+      {
+        "path": "c.live_activity_info",
+        "preview": "{\"live_activity_ddurl\": \"\", \"live_activity_type\": 0, \"live_playback_disabled\": 0, \"live_activity_id\": \"\"}"
+      },
+      {
+        "path": "c.live_activity_info.live_activity_ddurl",
+        "preview": ""
+      },
+      {
+        "path": "c.live_activity_info.live_activity_type",
+        "preview": "0"
+      },
+      {
+        "path": "c.live_activity_info.live_playback_disabled",
+        "preview": "0"
+      },
+      {
+        "path": "c.live_activity_info.live_activity_id",
+        "preview": ""
+      },
+      {
+        "path": "c.is_activity_live",
+        "preview": "false"
+      }
+    ]
+  },
+  {
+    "url": "https://www.dedao.cn/pc/ledgers/report/get",
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "media_like": false,
+    "top_keys": [
+      "c",
+      "h"
+    ],
+    "keyword_fields": []
+  },
+  {
+    "url": "https://www.dedao.cn/pc/sunflower/v1/label/list",
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "media_like": false,
+    "top_keys": [
+      "c",
+      "h"
+    ],
+    "keyword_fields": []
+  },
+  {
+    "url": "https://www.dedao.cn/media_gate/gate/api/v1/web",
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "media_like": false,
+    "top_keys": [
+      "c",
+      "h"
+    ],
+    "keyword_fields": []
+  },
+  {
+    "url": "https://www.dedao.cn/pc/ddlive/v2/pc/live/message/latest/survey",
+    "status": 200,
+    "content_type": "application/json",
+    "media_like": false,
+    "top_keys": [
+      "c",
+      "h"
+    ],
+    "keyword_fields": [
+      {
+        "path": "c.title",
+        "preview": ""
+      },
+      {
+        "path": "c.survey_title",
+        "preview": ""
+      }
+    ]
+  },
+  {
+    "url": "https://www.dedao.cn/pc/ddlive/v2/pc/live/message/top/qa/card",
+    "status": 200,
+    "content_type": "application/json",
+    "media_like": false,
+    "top_keys": [
+      "c",
+      "h"
+    ],
+    "keyword_fields": [
+      {
+        "path": "c.push_title",
+        "preview": ""
+      },
+      {
+        "path": "c.content_list",
+        "preview": "null"
+      }
+    ]
+  },
+  {
+    "url": "https://www.dedao.cn/pc/ddlive/v2/pc/product/list",
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "media_like": false,
+    "top_keys": [
+      "c",
+      "h"
+    ],
+    "keyword_fields": []
+  },
+  {
+    "url": "https://www.dedao.cn/pc/ddlive/v2/pc/live/message/list",
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "media_like": false,
+    "top_keys": [
+      "c",
+      "h"
+    ],
+    "keyword_fields": [
+      {
+        "path": "c.list[0].content",
+        "preview": "🎉🎉🎉🎉🎉🎉"
+      },
+      {
+        "path": "c.list[0].live_start_timestamp",
+        "preview": "1779793200"
+      },
+      {
+        "path": "c.list[0].questionnaire_info.live_id",
+        "preview": "0"
+      },
+      {
+        "path": "c.list[0].questionnaire_info.title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[0].questionnaire_info.push_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[0].reply_info.reply_text",
+        "preview": ""
+      },
+      {
+        "path": "c.list[0].reply_info.reply_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[0].live_records_type",
+        "preview": "0"
+      },
+      {
+        "path": "c.list[0].image_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[1].content",
+        "preview": "咋了这是"
+      },
+      {
+        "path": "c.list[1].live_start_timestamp",
+        "preview": "1779793200"
+      },
+      {
+        "path": "c.list[1].questionnaire_info.live_id",
+        "preview": "0"
+      },
+      {
+        "path": "c.list[1].questionnaire_info.title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[1].questionnaire_info.push_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[1].reply_info.reply_text",
+        "preview": ""
+      },
+      {
+        "path": "c.list[1].reply_info.reply_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[1].live_records_type",
+        "preview": "0"
+      },
+      {
+        "path": "c.list[1].image_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[2].content",
+        "preview": "完美"
+      },
+      {
+        "path": "c.list[2].live_start_timestamp",
+        "preview": "1779793200"
+      },
+      {
+        "path": "c.list[2].questionnaire_info.live_id",
+        "preview": "0"
+      },
+      {
+        "path": "c.list[2].questionnaire_info.title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[2].questionnaire_info.push_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[2].reply_info.reply_text",
+        "preview": ""
+      },
+      {
+        "path": "c.list[2].reply_info.reply_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[2].live_records_type",
+        "preview": "0"
+      },
+      {
+        "path": "c.list[2].image_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[3].content",
+        "preview": "😭一直在充值，还是没赶上，大哭"
+      },
+      {
+        "path": "c.list[3].live_start_timestamp",
+        "preview": "1779793200"
+      },
+      {
+        "path": "c.list[3].questionnaire_info.live_id",
+        "preview": "0"
+      },
+      {
+        "path": "c.list[3].live_records_type",
+        "preview": "0"
+      }
+    ]
+  },
+  {
+    "url": "https://www.dedao.cn/api/pc/hopkins/v1/pc/live/product/list",
+    "status": 401,
+    "content_type": "text/html; charset=utf-8",
+    "media_like": false
+  },
+  {
+    "url": "https://www.dedao.cn/media_gate/gate/api/v1/volc",
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "media_like": false,
+    "top_keys": [
+      "c",
+      "h"
+    ],
+    "keyword_fields": []
+  },
+  {
+    "url": "https://www.dedao.cn/oms/tags/user/share-trace",
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "media_like": false,
+    "top_keys": [
+      "c",
+      "h"
+    ],
+    "keyword_fields": []
+  },
+  {
+    "url": "https://www.dedao.cn/pc/ddlive/v2/pc/live/message/list",
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "media_like": false,
+    "top_keys": [
+      "c",
+      "h"
+    ],
+    "keyword_fields": [
+      {
+        "path": "c.list[0].content",
+        "preview": "生日快乐"
+      },
+      {
+        "path": "c.list[0].live_start_timestamp",
+        "preview": "1779793200"
+      },
+      {
+        "path": "c.list[0].questionnaire_info.live_id",
+        "preview": "0"
+      },
+      {
+        "path": "c.list[0].questionnaire_info.title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[0].questionnaire_info.push_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[0].reply_info.reply_text",
+        "preview": ""
+      },
+      {
+        "path": "c.list[0].reply_info.reply_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[0].live_records_type",
+        "preview": "0"
+      },
+      {
+        "path": "c.list[0].image_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[1].content",
+        "preview": "得到十周年，生日快乐"
+      },
+      {
+        "path": "c.list[1].live_start_timestamp",
+        "preview": "1779793200"
+      },
+      {
+        "path": "c.list[1].questionnaire_info.live_id",
+        "preview": "0"
+      },
+      {
+        "path": "c.list[1].questionnaire_info.title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[1].questionnaire_info.push_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[1].reply_info.reply_text",
+        "preview": ""
+      },
+      {
+        "path": "c.list[1].reply_info.reply_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[1].live_records_type",
+        "preview": "0"
+      },
+      {
+        "path": "c.list[1].image_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[2].content",
+        "preview": "得到十周年生日快乐"
+      },
+      {
+        "path": "c.list[2].live_start_timestamp",
+        "preview": "1779793200"
+      },
+      {
+        "path": "c.list[2].questionnaire_info.live_id",
+        "preview": "0"
+      },
+      {
+        "path": "c.list[2].questionnaire_info.title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[2].questionnaire_info.push_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[2].reply_info.reply_text",
+        "preview": ""
+      },
+      {
+        "path": "c.list[2].reply_info.reply_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[2].live_records_type",
+        "preview": "0"
+      },
+      {
+        "path": "c.list[2].image_title",
+        "preview": ""
+      },
+      {
+        "path": "c.list[3].content",
+        "preview": "很圆满完成任务"
+      },
+      {
+        "path": "c.list[3].live_start_timestamp",
+        "preview": "1779793200"
+      },
+      {
+        "path": "c.list[3].questionnaire_info.live_id",
+        "preview": "0"
+      },
+      {
+        "path": "c.list[3].live_records_type",
+        "preview": "0"
+      }
+    ]
+  },
+  {
+    "url": "https://hm.baidu.com/hm.gif?hca=F76AE8166BDCE01A&cc=1&ck=1&cl=24-bit&ds=1280x720&vl=720&et=0&ja=0&ln=zh-cn&lo=0&rnd=905680874&si=be36b12b82a5f4eaa42c23989d277bb0&v=1.3.2&lv=1&sn=23957&r=0&ww=1280&u=%3C100+chars%3E&tt=%E5%BE%97%E5%88%B0APP+-+%E7%9F%A5%E8%AF%86%E5%B0%B1%E6%98%AF%E5%8A%9B%E9%87%8F%EF%BC%8C%E7%9F%A5%E8%AF%86%E5%B0%B1%E5%9C%A8%E5%BE%97%E5%88%B0",
+    "status": 200,
+    "content_type": "image/gif",
+    "media_like": false
+  },
+  {
+    "url": "https://www.dedao.cn/prime/v1/producer/rpoint/report",
+    "status": 401,
+    "content_type": "text/html; charset=utf-8",
+    "media_like": false
+  },
+  {
+    "url": "https://www.dedao.cn/prime/v1/producer/rpoint/report",
+    "status": 401,
+    "content_type": "text/html; charset=utf-8",
+    "media_like": false
+  }
+]
