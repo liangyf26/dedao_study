@@ -188,7 +188,7 @@ class RepositoryTests(unittest.TestCase):
             self.assertNotIn("sk-test", stored)
             self.assertNotIn("run-secret", stored)
 
-    def test_summary_failed_with_saved_transcript_sets_synced_at(self):
+    def test_summary_failed_with_saved_transcript_is_stored_as_synced(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = SyncRepository(Path(tmp) / "sync.sqlite3")
             repo.migrate()
@@ -210,9 +210,52 @@ class RepositoryTests(unittest.TestCase):
             )
 
             rows = repo.list_items()
-            self.assertEqual(rows[0]["status"], STATUS_SUMMARY_FAILED)
+            self.assertEqual(rows[0]["status"], STATUS_SYNCED)
+            self.assertEqual(rows[0]["summary_status"], STATUS_SUMMARY_FAILED)
             self.assertEqual(rows[0]["has_transcript"], 1)
             self.assertIsNotNone(rows[0]["synced_at"])
+
+    def test_migrate_normalizes_saved_summary_failed_items_as_synced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "sync.sqlite3"
+            repo = SyncRepository(db_path)
+            repo.migrate()
+            item = ContentItem(
+                source_url="https://example.com/legacy-summary-failed",
+                detail_url="https://example.com/legacy-summary-failed",
+                dedao_id="legacy-summary-failed",
+                column_name="栏目",
+                title="标题",
+            )
+            with repo.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO items (
+                        source_url, dedao_id, canonical_url, column_name, title,
+                        synced_at, status, file_path, has_transcript,
+                        summary_status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                    """,
+                    (
+                        item.source_url,
+                        item.dedao_id,
+                        item.detail_url,
+                        item.column_name,
+                        item.title,
+                        "2026-01-01T00:00:00+00:00",
+                        STATUS_SUMMARY_FAILED,
+                        "note.md",
+                        STATUS_SUMMARY_FAILED,
+                        "2026-01-01T00:00:00+00:00",
+                        "2026-01-01T00:00:00+00:00",
+                    ),
+                )
+
+            repo.migrate()
+
+            rows = repo.list_items()
+            self.assertEqual(rows[0]["status"], STATUS_SYNCED)
+            self.assertEqual(rows[0]["summary_status"], STATUS_SUMMARY_FAILED)
 
     def test_summary_failed_without_saved_transcript_does_not_set_synced_at(self):
         with tempfile.TemporaryDirectory() as tmp:

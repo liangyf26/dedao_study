@@ -1,0 +1,22 @@
+apis:
+  - name: dasu-pro
+    base_url: "https://dasuapi.com/v1"
+    api_key: "DASU_PRO_KEY"
+    model: "gpt-5.4"
+
+  - name: dasu-plus
+    base_url: "https://dasuapi.com/v1"
+    api_key_env: "DASU_PLUS_KEY"
+    model: "gpt-5.4"
+    
+  - name: opencode
+    base_url: "https://opencode.ai/zen/go/v1"
+    api_key_env: "OPENCODE_GO_API_KEY"
+    model: "deepseek-v4-pro"
+    user_agent: "curl/8.7.1"
+
+  - name: zhihui
+    base_url: "https://api.api2cn.com/v1"
+    api_key_env: "ZHIHUI_API_KEY"
+    model: "gpt-5.4-mini"
+    user_agent: "curl/8.7.1"

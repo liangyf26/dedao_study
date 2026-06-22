@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from .models import ContentItem, RunReport
+from .models import ContentItem, RunReport, STATUS_SUMMARY_FAILED, STATUS_SYNCED
 from .security import redact
 from .time_utils import now_local
 
@@ -17,6 +17,12 @@ def utc_now_iso() -> str:
 
 def should_mark_synced_at(*, status: str, has_transcript: bool, file_path: str | Path | None) -> bool:
     return status == "synced" or (has_transcript and file_path is not None)
+
+
+def item_storage_status(*, status: str, has_transcript: bool, file_path: str | Path | None) -> str:
+    if status == STATUS_SUMMARY_FAILED and has_transcript and file_path is not None:
+        return STATUS_SYNCED
+    return status
 
 
 ITEM_COLUMNS = {
@@ -150,6 +156,16 @@ class SyncRepository:
             conn.execute("UPDATE items SET canonical_url = source_url WHERE canonical_url IS NULL")
             conn.execute("UPDATE items SET created_at = ? WHERE created_at IS NULL OR created_at = ''", (now,))
             conn.execute("UPDATE items SET updated_at = ? WHERE updated_at IS NULL OR updated_at = ''", (now,))
+            conn.execute(
+                """
+                UPDATE items
+                SET status = ?
+                WHERE status = ?
+                  AND has_transcript = 1
+                  AND file_path IS NOT NULL
+                """,
+                (STATUS_SYNCED, STATUS_SUMMARY_FAILED),
+            )
             conn.execute("UPDATE runs SET started_at = ? WHERE started_at IS NULL OR started_at = ''", (now,))
 
     @staticmethod
@@ -238,7 +254,8 @@ class SyncRepository:
         now = utc_now_iso()
         existing = self.find_existing(item, content_hash)
         safe_error = redact(error_message) if error_message else None
-        mark_synced_at = should_mark_synced_at(status=status, has_transcript=has_transcript, file_path=file_path)
+        stored_status = item_storage_status(status=status, has_transcript=has_transcript, file_path=file_path)
+        mark_synced_at = should_mark_synced_at(status=stored_status, has_transcript=has_transcript, file_path=file_path)
         with self.connect() as conn:
             if existing:
                 conn.execute(
@@ -263,7 +280,7 @@ class SyncRepository:
                         int(mark_synced_at),
                         now,
                         content_hash,
-                        status,
+                        stored_status,
                         str(file_path) if file_path else None,
                         int(has_transcript),
                         int(transcribed),
@@ -292,7 +309,7 @@ class SyncRepository:
                     item.published_at,
                     now if mark_synced_at else None,
                     content_hash,
-                    status,
+                    stored_status,
                     str(file_path) if file_path else None,
                     int(has_transcript),
                     int(transcribed),

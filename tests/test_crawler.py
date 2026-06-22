@@ -124,6 +124,95 @@ class CrawlerTests(unittest.TestCase):
         self.assertEqual(len(page.calls), 1)
         self.assertEqual(page.calls[0][1]["wait_until"], "commit")
 
+    def test_fetch_detail_returns_login_required_for_login_page(self):
+        class ExplodingExtractor:
+            def from_ddarticle_payload(self, item, payload):
+                raise AssertionError("login pages should not be parsed as ddarticle payloads")
+
+            def from_html(self, item, html):
+                raise AssertionError("login pages should not be parsed as article HTML")
+
+        class TimeoutResponse:
+            def __enter__(self):
+                raise RuntimeError("Timeout 15000ms")
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeLocator:
+            def inner_text(self, **kwargs):
+                return "得到一下 知识城邦 账户充值 登录 注册 验证码登录 获取验证码 最近学习"
+
+        class FakePage:
+            def __init__(self):
+                self.url = "about:blank"
+
+            def on(self, *args, **kwargs):
+                pass
+
+            def expect_response(self, *args, **kwargs):
+                return TimeoutResponse()
+
+            def goto(self, url, **kwargs):
+                self.url = url
+
+            def wait_for_load_state(self, *args, **kwargs):
+                pass
+
+            def wait_for_timeout(self, *args, **kwargs):
+                pass
+
+            def title(self):
+                return "得到APP - 知识就是力量，知识就在得到"
+
+            def content(self):
+                return "<html><body>验证码登录 获取验证码 最近学习</body></html>"
+
+            def locator(self, selector):
+                self.selector = selector
+                return FakeLocator()
+
+        class FakeContext:
+            def __init__(self):
+                self.page = FakePage()
+
+            def new_page(self):
+                return self.page
+
+            def close(self):
+                pass
+
+        class FakePlaywrightManager:
+            def __enter__(self):
+                return object()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeCrawler(DedaoCrawler):
+            def _sync_playwright(self):
+                return lambda: FakePlaywrightManager()
+
+            def _new_context(self, playwright):
+                return None, FakeContext()
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch("dedao_sync.crawler.time.sleep"):
+            crawler = FakeCrawler(self._config(Path(tmp)), extractor=ExplodingExtractor())
+            item = ContentItem(
+                source_url="https://aiquan.dedao.cn/courseList?type=1",
+                detail_url="https://www.dedao.cn/course/article?id=abc",
+                dedao_id="abc",
+                column_name="快刀青衣·快刀广播站",
+                title="688｜三年前Google发Code Red对抗OpenAI",
+            )
+
+            detail = crawler.fetch_detail(item)
+
+        self.assertFalse(detail.has_transcript)
+        self.assertEqual(detail.quality_reason, "login_required")
+        self.assertEqual(detail.item.title, "688｜三年前Google发Code Red对抗OpenAI")
+        self.assertTrue(detail.raw_html_hash)
+
     def test_save_failure_html_uses_configured_debug_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -202,6 +291,24 @@ class CrawlerTests(unittest.TestCase):
         self.assertEqual(items[0].published_at, "2026-06-07")
         self.assertEqual(items[0].column_name, "快刀青衣·快刀广播站")
 
+    def test_items_from_aiquan_articles_accepts_free_article_list_fields(self):
+        items = DedaoCrawler.items_from_aiquan_articles(
+            ColumnConfig("快刀青衣·快刀广播站", "https://aiquan.dedao.cn/courseList?type=1"),
+            [
+                {
+                    "title": "875｜顶尖AI分析体育比赛视频",
+                    "enid": "kzlWERBr6meVb1WxWPK2j7LD4Od3Zp",
+                    "id_str": "6000826",
+                    "publish_time": 1780934400,
+                }
+            ],
+        )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].detail_url, "https://www.dedao.cn/course/article?id=kzlWERBr6meVb1WxWPK2j7LD4Od3Zp")
+        self.assertEqual(items[0].dedao_id, "kzlWERBr6meVb1WxWPK2j7LD4Od3Zp")
+        self.assertEqual(items[0].published_at, "2026-06-09")
+
     def test_items_from_aiquan_articles_requires_enid(self):
         items = DedaoCrawler.items_from_aiquan_articles(
             ColumnConfig("快刀青衣·快刀广播站", "https://aiquan.dedao.cn/courseList?type=1"),
@@ -209,6 +316,37 @@ class CrawlerTests(unittest.TestCase):
         )
 
         self.assertEqual(items, [])
+
+    def test_page_aiquan_audio_items_reads_vue_card_props(self):
+        class FakePage:
+            def eval_on_selector_all(self, selector, script):
+                self.selector = selector
+                self.script = script
+                return [
+                    {
+                        "title": "875｜顶尖AI分析体育比赛视频",
+                        "enid": "kzlWERBr6meVb1WxWPK2j7LD4Od3Zp",
+                        "id": "6000826",
+                        "publishTime": 1780934400,
+                    },
+                    {
+                        "title": "874｜硅谷Box CEO暴论",
+                        "enid": "y7GQpR6ndOgX6kYAYmK8eBvPzMN4lw",
+                        "id": "6000812",
+                        "publishTime": 1780848000,
+                    },
+                ]
+
+        page = FakePage()
+        items = DedaoCrawler._page_aiquan_audio_items(
+            page,
+            ColumnConfig("快刀青衣·快刀广播站", "https://aiquan.dedao.cn/courseList?type=1"),
+        )
+
+        self.assertEqual(page.selector, ".audio-card.audio-item")
+        self.assertEqual(len(items), 2)
+        self.assertEqual([item.dedao_id for item in items], ["kzlWERBr6meVb1WxWPK2j7LD4Od3Zp", "y7GQpR6ndOgX6kYAYmK8eBvPzMN4lw"])
+        self.assertEqual(items[0].published_at, "2026-06-09")
 
     def test_capture_aiquan_article_response_keeps_minimal_fields(self):
         class FakeResponse:
@@ -243,6 +381,39 @@ class CrawlerTests(unittest.TestCase):
                     "id": 6000802,
                     "title": "873｜周日荐文",
                     "publishTime": 1780761600,
+                }
+            ],
+        )
+
+    def test_capture_aiquan_free_article_list_response_keeps_minimal_fields(self):
+        class FakeResponse:
+            url = "https://aiquan.dedao.cn/aichannel/class/free_article_list"
+
+            def json(self):
+                return {
+                    "c": {
+                        "article_list": [
+                            {
+                                "id_str": "6000826",
+                                "enid": "kzlWERBr6meVb1WxWPK2j7LD4Od3Zp",
+                                "title": "875｜顶尖AI分析体育比赛视频",
+                                "publish_time": 1780934400,
+                            }
+                        ]
+                    }
+                }
+
+        output = []
+        DedaoCrawler._capture_aiquan_article_response(FakeResponse(), output)
+
+        self.assertEqual(
+            output,
+            [
+                {
+                    "enid": "kzlWERBr6meVb1WxWPK2j7LD4Od3Zp",
+                    "id": "6000826",
+                    "title": "875｜顶尖AI分析体育比赛视频",
+                    "publishTime": 1780934400,
                 }
             ],
         )

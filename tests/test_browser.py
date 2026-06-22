@@ -5,7 +5,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from dedao_sync.browser import check_playwright_chromium, is_dedao_logged_in_page, validate_storage_state_file
+from dedao_sync.browser import (
+    check_playwright_chromium,
+    is_dedao_logged_in_page,
+    is_dedao_login_page,
+    validate_storage_state_file,
+)
 
 
 VALID_STATE = '{"cookies":[{"name":"sid","value":"test","domain":".dedao.cn","path":"/"}],"origins":[]}'
@@ -21,6 +26,17 @@ class BrowserTests(unittest.TestCase):
         text = "扫码登录 手机号登录 验证码"
 
         self.assertFalse(is_dedao_logged_in_page("https://www.dedao.cn/login", text))
+
+    def test_dedao_login_detector_rejects_bought_page_with_login_form(self):
+        text = "得到一下 知识城邦 账户充值 登录 注册 首页我的学习直播 最近学习 课程 验证码登录 获取验证码"
+
+        self.assertTrue(is_dedao_login_page("https://www.dedao.cn/bought", text))
+        self.assertFalse(is_dedao_logged_in_page("https://www.dedao.cn/bought", text))
+
+    def test_dedao_login_detector_does_not_reject_registered_course_name(self):
+        text = "首页 我的学习 最近学习 已购 注册会计师训练营"
+
+        self.assertTrue(is_dedao_logged_in_page("https://www.dedao.cn/bought", text))
 
     def test_validate_storage_state_accepts_playwright_shape_with_auth_data(self):
         with tempfile.TemporaryDirectory() as tmp:

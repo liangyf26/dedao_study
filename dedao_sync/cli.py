@@ -18,7 +18,6 @@ from .models import (
     STATUS_FAILED,
     STATUS_MISSING_TRANSCRIPT,
     STATUS_POLICY_BLOCKED,
-    STATUS_SUMMARY_FAILED,
     STATUS_TRANSCRIPTION_FAILED,
 )
 from .notifier import FeishuNotifier, NotificationError, load_feishu_credentials
@@ -316,7 +315,6 @@ def cmd_list(args: argparse.Namespace) -> int:
                 STATUS_EXTRACTOR_FAILED,
                 STATUS_MISSING_TRANSCRIPT,
                 STATUS_POLICY_BLOCKED,
-                STATUS_SUMMARY_FAILED,
                 STATUS_TRANSCRIPTION_FAILED,
             ]
         )

@@ -10,15 +10,21 @@ class BrowserDependencyError(RuntimeError):
     pass
 
 
-def is_dedao_logged_in_page(url: str, text: str) -> bool:
+DEDAO_LOGIN_MARKERS = ("扫码登录", "验证码登录", "手机号登录", "获取验证码", "请登录", "登录/注册")
+DEDAO_LOGGED_IN_MARKERS = ("已购", "最近学习", "退出登录")
+
+
+def is_dedao_login_page(url: str, text: str) -> bool:
     if "login" in url.lower():
-        return False
-    logged_in_markers = ("已购", "学习", "我的")
-    if any(marker in text for marker in logged_in_markers):
         return True
-    login_markers = ("扫码登录", "验证码", "手机号登录", "请登录", "登录/注册")
-    if any(marker in text for marker in login_markers):
+    return any(marker in text for marker in DEDAO_LOGIN_MARKERS)
+
+
+def is_dedao_logged_in_page(url: str, text: str) -> bool:
+    if is_dedao_login_page(url, text):
         return False
+    if any(marker in text for marker in DEDAO_LOGGED_IN_MARKERS):
+        return True
     return False
 
 

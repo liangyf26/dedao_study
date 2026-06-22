@@ -552,8 +552,9 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(len(notes), 1)
             self.assertIn("## 全文稿", notes[0].read_text(encoding="utf-8"))
             rows = SyncRepository(default_db_path(root)).list_items()
-            self.assertEqual(rows[0]["status"], STATUS_SUMMARY_FAILED)
+            self.assertEqual(rows[0]["status"], STATUS_SYNCED)
             self.assertEqual(rows[0]["summary_status"], STATUS_SUMMARY_FAILED)
+            self.assertEqual(rows[0]["error_message"], "summary api failed")
             self.assertEqual(rows[0]["has_transcript"], 1)
             self.assertIsNotNone(rows[0]["synced_at"])
             logging.shutdown()
@@ -589,6 +590,32 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(report.success_count, 1)
             self.assertEqual(report.request_count, 2)
             self.assertEqual(SyncRepository(default_db_path(root)).list_items()[0]["status"], STATUS_SYNCED)
+            logging.shutdown()
+
+    def test_retry_failed_records_summary_error_after_fetch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(root)
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+            repo = SyncRepository(default_db_path(root))
+            repo.migrate()
+            item = ContentItem("https://example.com/r-sf", "栏目", "健康参考 Retry SF", "https://example.com/r-sf", dedao_id="r-sf")
+            repo.upsert_item(item, status="failed", error_message="old")
+
+            crawler = FakeCrawler([], {"r-sf": "健康参考 Retry SF\n\n第一段内容很长，足够形成正文。\n\n第二段继续展开。\n\n第三段给出边界。"})
+            report, run_id = run_retry_failed(config_path, crawler=crawler, summary_service=FailingSummary(), notifier=FakeNotifier())
+
+            self.assertEqual(report.status, "partial_failed")
+            self.assertEqual(report.summary_failed_count, 1)
+            row = SyncRepository(default_db_path(root)).list_items()[0]
+            self.assertEqual(row["status"], STATUS_SYNCED)
+            self.assertEqual(row["summary_status"], STATUS_SUMMARY_FAILED)
+            self.assertEqual(row["error_message"], "summary api failed")
+            run_items = repo.list_run_items(run_id)
+            self.assertEqual(run_items[0]["run_item_status"], STATUS_SUMMARY_FAILED)
+            self.assertEqual(run_items[0]["message"], "summary api failed")
             logging.shutdown()
 
     def test_retry_failed_includes_transcription_failed_items(self):
@@ -629,7 +656,7 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(SyncRepository(default_db_path(root)).list_items()[0]["status"], STATUS_POLICY_BLOCKED)
             logging.shutdown()
 
-    def test_retry_failed_resummarizes_existing_note_without_duplicate_file(self):
+    def test_retry_failed_skips_saved_summary_failures_without_duplicate_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config_path = write_config(root)
@@ -663,14 +690,15 @@ class SyncTests(unittest.TestCase):
             )
 
             self.assertEqual(report.status, "success")
-            self.assertEqual(report.success_count, 1)
+            self.assertEqual(report.discovered_count, 0)
+            self.assertEqual(report.success_count, 0)
             self.assertEqual(len(list(note_dir.glob("*.md"))), 1)
-            self.assertIn("卡片", note.read_text(encoding="utf-8"))
+            self.assertIn("摘要尚未生成", note.read_text(encoding="utf-8"))
             rows = SyncRepository(default_db_path(root)).list_items()
             self.assertEqual(rows[0]["status"], STATUS_SYNCED)
             self.assertEqual(rows[0]["file_path"], str(note))
             run_items = repo.list_run_items(run_id)
-            self.assertEqual(run_items[0]["action"], "retry-summary")
+            self.assertEqual(run_items, [])
             logging.shutdown()
 
     def test_resummarize_overwrites_existing_note(self):
@@ -724,7 +752,7 @@ class SyncTests(unittest.TestCase):
 
             self.assertEqual(report.status, "partial_failed")
             row = SyncRepository(default_db_path(root)).list_items()[0]
-            self.assertEqual(row["status"], STATUS_SUMMARY_FAILED)
+            self.assertEqual(row["status"], STATUS_SYNCED)
             self.assertEqual(row["summary_status"], STATUS_SUMMARY_FAILED)
             self.assertEqual(row["has_transcript"], 1)
             self.assertEqual(row["file_path"], str(note))

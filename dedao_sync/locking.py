@@ -55,13 +55,53 @@ class RunLock:
     def _remove_if_stale(self) -> None:
         if not self.path.exists():
             return
+        host = ""
+        pid = 0
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
+            pid = int(raw.get("pid") or 0)
+            host = str(raw.get("host") or "")
             acquired_at = datetime.fromisoformat(str(raw["acquired_at"]))
         except (OSError, KeyError, ValueError, json.JSONDecodeError):
             acquired_at = datetime.fromtimestamp(self.path.stat().st_mtime, timezone.utc)
         if acquired_at.tzinfo is None:
             acquired_at = acquired_at.replace(tzinfo=timezone.utc)
+        if host == socket.gethostname() and pid and not is_process_running(pid):
+            self.path.unlink(missing_ok=True)
+            return
         if datetime.now(timezone.utc) - acquired_at > self.stale_after:
             self.path.unlink(missing_ok=True)
+
+
+def is_process_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            process_query_limited_information = 0x1000
+            still_active = 259
+            handle = ctypes.windll.kernel32.OpenProcess(process_query_limited_information, False, pid)
+            if not handle:
+                return False
+            try:
+                exit_code = wintypes.DWORD()
+                if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return False
+                return exit_code.value == still_active
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception:
+            return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 

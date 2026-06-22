@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import random
 import re
 import time
@@ -9,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
-from .browser import is_dedao_logged_in_page
+from .browser import is_dedao_logged_in_page, is_dedao_login_page
 from .extractor import TranscriptExtractor
 from .models import AppConfig, ColumnConfig, ContentDetail, ContentItem
 from .time_utils import APP_TIMEZONE, now_local
@@ -83,16 +84,22 @@ class DedaoCrawler:
             try:
                 page = context.new_page()
                 aiquan_articles: list[dict[str, object]] = []
-                if urlparse(column.url).netloc.lower() == "aiquan.dedao.cn":
+                is_aiquan = urlparse(column.url).netloc.lower() == "aiquan.dedao.cn"
+                if is_aiquan:
                     page.on("response", lambda response: self._capture_aiquan_article_response(response, aiquan_articles))
                 self._goto_page(page, column.url, timeout=45000)
-                self._prepare_list_page(page)
-                anchors = self._page_anchors(page)
-                items = self.items_from_anchors(column, anchors)
-                if not items:
-                    items = self._page_vue_course_items(page, column)
-                if not items and aiquan_articles:
-                    items = self.items_from_aiquan_articles(column, aiquan_articles)
+                if is_aiquan:
+                    self._prepare_aiquan_list_page(page)
+                    items = self._page_aiquan_audio_items(page, column)
+                    anchors = self._page_anchors(page)
+                    if not items and aiquan_articles:
+                        items = self.items_from_aiquan_articles(column, aiquan_articles)
+                else:
+                    self._prepare_list_page(page)
+                    anchors = self._page_anchors(page)
+                    items = self.items_from_anchors(column, anchors)
+                    if not items:
+                        items = self._page_vue_course_items(page, column)
                 diagnostic_path = None
                 if not items and self.config.dedao.save_failure_html:
                     diagnostic_path = self._save_list_failure_snapshot(column, page, anchors)
@@ -123,6 +130,15 @@ class DedaoCrawler:
                 page.wait_for_timeout(self._request_delay_ms())
                 title = page.title() or item.title
                 html = page.content()
+                body_text = self._page_body_text(page) or html
+                if is_dedao_login_page(page.url, body_text):
+                    return ContentDetail(
+                        item=item,
+                        transcript_text="",
+                        has_transcript=False,
+                        raw_html_hash=hashlib.sha256(html.encode("utf-8")).hexdigest(),
+                        quality_reason="login_required",
+                    )
                 if title and title != item.title:
                     item = ContentItem(
                         source_url=item.source_url,
@@ -148,6 +164,13 @@ class DedaoCrawler:
             finally:
                 self._close_context(browser, context)
                 time.sleep(self._request_delay_seconds())
+
+    @staticmethod
+    def _page_body_text(page) -> str:
+        try:
+            return page.locator("body").inner_text(timeout=5000)
+        except Exception:
+            return ""
 
     def _save_failure_html(self, item: ContentItem, html: str, raw_html_hash: str | None) -> Path:
         output_dir = self.config.dedao.failure_snapshot_dir
@@ -231,6 +254,63 @@ class DedaoCrawler:
         page.wait_for_timeout(self._request_delay_ms())
         self._scroll_page(page)
 
+    def _prepare_aiquan_list_page(self, page) -> None:
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+        page.wait_for_timeout(self._request_delay_ms())
+        self._load_all_aiquan_audio_items(page)
+
+    @staticmethod
+    def _load_all_aiquan_audio_items(page, *, max_rounds: int = 50, wait_ms: int = 900) -> None:
+        try:
+            page.evaluate(
+                """async ({ maxRounds, waitMs }) => {
+                    const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+                    const cardSelector = '.audio-card.audio-item';
+                    const countCards = () => document.querySelectorAll(cardSelector).length;
+                    const findLoadMoreVm = () => {
+                        const card = document.querySelector(cardSelector);
+                        const vueKey = card && Object.keys(card).find(key => key.startsWith('__vue'));
+                        let vm = vueKey ? card[vueKey] : null;
+                        while (vm) {
+                            if (typeof vm.loadMore === 'function') return vm;
+                            vm = vm.$parent;
+                        }
+                        for (const el of document.querySelectorAll('*')) {
+                            const key = Object.keys(el).find(name => name.startsWith('__vue'));
+                            const candidate = key && el[key];
+                            if (candidate && typeof candidate.loadMore === 'function') return candidate;
+                        }
+                        return null;
+                    };
+                    const vm = findLoadMoreVm();
+                    if (!vm) return countCards();
+                    let stableRounds = 0;
+                    let previousCount = countCards();
+                    for (let round = 0; round < maxRounds; round += 1) {
+                        const result = vm.loadMore();
+                        if (result && typeof result.then === 'function') {
+                            await result;
+                        }
+                        await delay(waitMs);
+                        const nextCount = countCards();
+                        if (nextCount <= previousCount) {
+                            stableRounds += 1;
+                        } else {
+                            stableRounds = 0;
+                            previousCount = nextCount;
+                        }
+                        if (stableRounds >= 2) break;
+                    }
+                    return countCards();
+                }""",
+                {"maxRounds": max_rounds, "waitMs": wait_ms},
+            )
+        except Exception:
+            return
+
     @staticmethod
     def _scroll_page(page, *, steps: int = 4, wait_ms: int = 800) -> None:
         for _ in range(steps):
@@ -300,8 +380,34 @@ class DedaoCrawler:
         return cls.items_from_vue_articles(column, articles)
 
     @classmethod
+    def _page_aiquan_audio_items(cls, page, column: ColumnConfig) -> list[ContentItem]:
+        articles = page.eval_on_selector_all(
+            ".audio-card.audio-item",
+            """els => els.map(el => {
+                const vueKey = Object.keys(el).find(key => key.startsWith('__vue'));
+                const vm = vueKey ? el[vueKey] : null;
+                const data = (vm && vm.$props && vm.$props.data) || {};
+                const audio = data && data.audio && typeof data.audio === 'object' ? data.audio : {};
+                return {
+                    enid: data.enid || data.en_id || data.enId || '',
+                    id: data.id_str || data.idStr || data.id || data.dd_article_id_str || data.dd_article_id || '',
+                    title: data.title || audio.title || '',
+                    publishTime: data.publish_time || data.publishTime || '',
+                    url: data.url || data.ddurl || data.share_url || ''
+                };
+            })""",
+        )
+        return cls.items_from_aiquan_articles(column, articles)
+
+    @classmethod
     def _capture_aiquan_article_response(cls, response, output: list[dict[str, object]]) -> None:
-        if "/aichannel/sphere/v1/app/special/article_list" not in response.url:
+        if not any(
+            marker in response.url
+            for marker in (
+                "/aichannel/sphere/v1/app/special/article_list",
+                "/aichannel/class/free_article_list",
+            )
+        ):
             return
         try:
             payload = response.json()
@@ -322,8 +428,8 @@ class DedaoCrawler:
             audio = audio if isinstance(audio, dict) else {}
             output.append(
                 {
-                    "enid": article.get("en_id") or article.get("enid") or "",
-                    "id": article.get("id_str") or article.get("id") or "",
+                    "enid": article.get("en_id") or article.get("enid") or article.get("enId") or "",
+                    "id": article.get("id_str") or article.get("idStr") or article.get("id") or "",
                     "title": article.get("title") or audio.get("title") or "",
                     "publishTime": article.get("publish_time") or article.get("publishTime"),
                 }
@@ -345,9 +451,11 @@ class DedaoCrawler:
         items: list[ContentItem] = []
         seen: set[str] = set()
         for article in articles:
-            title = re.sub(r"\s+", " ", str(article.get("title") or "")).strip()
-            enid = str(article.get("enid") or "").strip()
-            raw_id = str(article.get("id") or "").strip()
+            audio = article.get("audio")
+            audio = audio if isinstance(audio, dict) else {}
+            title = re.sub(r"\s+", " ", str(article.get("title") or audio.get("title") or "")).strip()
+            enid = str(article.get("enid") or article.get("en_id") or article.get("enId") or "").strip()
+            raw_id = str(article.get("id") or article.get("id_str") or article.get("idStr") or "").strip()
             if not title or len(title) < 4 or not enid:
                 continue
             detail_url = cls._normalize_url(f"https://www.dedao.cn/course/article?id={enid}", column.url)
@@ -361,7 +469,7 @@ class DedaoCrawler:
                     dedao_id=enid or raw_id,
                     column_name=column.name,
                     title=title[:120],
-                    published_at=cls._format_publish_time(article.get("publishTime")),
+                    published_at=cls._format_publish_time(article.get("publishTime") or article.get("publish_time")),
                     content_type="web",
                 )
             )

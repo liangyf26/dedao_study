@@ -336,9 +336,12 @@ def run_sync(
 
                         summary = SummaryResult.empty(status=STATUS_SUMMARY_FAILED)
                         summary_status = STATUS_SUMMARY_FAILED
+                        summary_error = redact(exc)
                         report.summary_failed_count += 1
                         add_report_item(report.summary_failed_by_column, synced_item.column_name, synced_item.title, exc)
                         LOGGER.warning("summary failed for %s: %s", item.title, exc)
+                    else:
+                        summary_error = None
 
                     LOGGER.info("writing note: %s - %s", synced_item.column_name, synced_item.title)
                     path = writer.write(detail, summary)
@@ -350,8 +353,9 @@ def run_sync(
                         file_path=path,
                         has_transcript=True,
                         summary_status=summary_status,
+                        error_message=summary_error,
                     )
-                    repo.add_run_item(run_id, item_id, "sync", status, str(path))
+                    repo.add_run_item(run_id, item_id, "sync", status, summary_error if summary_error else str(path))
                     report.success_count += 1
                     report.added_by_column.setdefault(column.name, []).append(synced_item.title)
                     LOGGER.info("synced: %s - %s -> %s", synced_item.column_name, synced_item.title, path)
@@ -400,7 +404,6 @@ def run_retry_failed(
             STATUS_FAILED,
             STATUS_EXTRACTOR_FAILED,
             STATUS_MISSING_TRANSCRIPT,
-            STATUS_SUMMARY_FAILED,
             STATUS_TRANSCRIPTION_FAILED,
         ),
         limit=limit,
@@ -519,6 +522,7 @@ def run_retry_failed(
                     continue
                 digest = content_hash(detail.transcript_text)
                 summary_status = "disabled"
+                summary_error = None
                 try:
                     summary = summary_service.summarize(detail)
                     summary_status = summary.status
@@ -527,6 +531,7 @@ def run_retry_failed(
 
                     summary = SummaryResult.empty(status=STATUS_SUMMARY_FAILED)
                     summary_status = STATUS_SUMMARY_FAILED
+                    summary_error = redact(exc)
                     report.summary_failed_count += 1
                     add_report_item(report.summary_failed_by_column, synced_item.column_name, synced_item.title, exc)
                     LOGGER.warning("summary failed for retry %s: %s", item.title, exc)
@@ -539,8 +544,9 @@ def run_retry_failed(
                     file_path=path,
                     has_transcript=True,
                     summary_status=summary_status,
+                    error_message=summary_error,
                 )
-                repo.add_run_item(run_id, item_id, "retry", status, str(path))
+                repo.add_run_item(run_id, item_id, "retry", status, summary_error if summary_error else str(path))
                 report.success_count += 1
                 report.added_by_column.setdefault(synced_item.column_name, []).append(synced_item.title)
             except Exception as exc:
