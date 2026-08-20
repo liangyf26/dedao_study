@@ -19,12 +19,13 @@ class GitignoreTests(unittest.TestCase):
             "data/media_cache/",
             "data/page_snapshots/",
             "data/page_failures/",
-            "data/*.sqlite3",
             "data/*.sqlite3-*",
             "logs/",
         }
 
         self.assertTrue(required <= ignored)
+        # 状态库随仓库同步（迁移时保留去重状态），不应被忽略
+        self.assertNotIn("data/*.sqlite3", ignored)
 
 
 if __name__ == "__main__":

@@ -286,6 +286,35 @@ class ExtractorTests(unittest.TestCase):
         self.assertNotIn("内容介绍", transcript)
         self.assertNotIn("发布", transcript)
 
+    def test_extract_transcript_section_falls_back_to_zhuanshushi_marker(self):
+        text = "\n".join(
+            [
+                "展开目录",
+                "设置文本",
+                "669｜AI歌曲登顶Billboard榜单",
+                "AI歌曲登顶Billboard榜单.mp3",
+                "11分43秒",
+                "转述师：AI",
+                "",
+                "你好，我是快刀青衣。欢迎收听快刀广播站，每天带你看AI。",
+                "这是第一段足够完整的正文内容，说明来龙去脉。",
+                "好，今天广播就到这里，明天接着聊。",
+                "我的留言",
+                "用户留言",
+                "感谢分享！",
+                "上一篇",
+            ]
+        )
+
+        transcript = extract_dedao_transcript_section(text)
+
+        self.assertIn("你好，我是快刀青衣", transcript)
+        self.assertIn("今天广播就到这里", transcript)
+        self.assertNotIn("转述师：AI", transcript)
+        self.assertNotIn("我的留言", transcript)
+        self.assertNotIn("用户留言", transcript)
+        self.assertNotIn("上一篇", transcript)
+
     def test_from_html_prefers_dedao_transcript_section_over_noisy_page(self):
         item = ContentItem(
             source_url="https://www.dedao.cn/course/article?id=abc",

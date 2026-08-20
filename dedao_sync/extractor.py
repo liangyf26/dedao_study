@@ -334,11 +334,20 @@ def extract_dedao_transcript_section(text: str) -> str:
     lines = [line.strip() for line in text.splitlines()]
     start = _first_line_index(lines, "全文稿")
     if start is None:
+        # 新版页面无“全文稿”标题，转录直接跟在“转述师：xx”行之后
+        for index, line in enumerate(lines):
+            if "转述师" in line:
+                start = index
+                break
+    if start is None:
         return ""
     end_markers = {
         "发布",
         "公开",
         "写留言，与作者互动",
+        "我的留言",
+        "用户留言",
+        "上一篇",
         "联系我们：",
         "相关链接：",
         "了解更多：",

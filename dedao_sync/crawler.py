@@ -127,7 +127,7 @@ class DedaoCrawler:
                 try:
                     with page.expect_response(
                         lambda response: "/pc/ddarticle/v1/article/get/v2" in response.url and response.status == 200,
-                        timeout=15000,
+                        timeout=45000,
                     ) as response_info:
                         self._goto_page(page, item.detail_url, timeout=45000)
                     self._capture_ddarticle_response(response_info.value, ddarticle_payloads)
