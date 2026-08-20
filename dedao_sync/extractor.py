@@ -12,14 +12,11 @@ from .policy import check_page_policy
 
 
 UI_NOISE_PATTERNS = (
+    # 只保留 UI 特征词；"分享/评论/购买" 等口播文案常见词不在此列，避免误伤正文
     "登录",
     "扫码",
     "下载App",
     "相关推荐",
-    "分享",
-    "收藏",
-    "评论",
-    "购买",
     "加入学习",
 )
 
