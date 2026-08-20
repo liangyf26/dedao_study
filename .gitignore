@@ -8,6 +8,7 @@ data/page_snapshots/
 data/page_failures/
 # 状态库随仓库同步（迁移时保留去重状态）；WAL/SHM 临时文件仍忽略
 data/*.sqlite3-*
+data/*.lock
 
 logs/
 
