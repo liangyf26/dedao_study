@@ -6,7 +6,7 @@ data/browser_profile/
 data/media_cache/
 data/page_snapshots/
 data/page_failures/
-data/*.sqlite3
+# 状态库随仓库同步（迁移时保留去重状态）；WAL/SHM 临时文件仍忽略
 data/*.sqlite3-*
 
 logs/
