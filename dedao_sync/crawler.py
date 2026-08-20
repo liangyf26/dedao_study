@@ -71,9 +71,18 @@ class DedaoCrawler:
             try:
                 page = context.new_page()
                 self._goto_page(page, "https://www.dedao.cn/bought", timeout=30000)
-                page.wait_for_timeout(2000)
-                text = page.locator("body").inner_text(timeout=10000)
-                return is_dedao_logged_in_page(page.url, text)
+                deadline = time.time() + 25
+                while time.time() < deadline:
+                    page.wait_for_timeout(1000)
+                    try:
+                        text = page.locator("body").inner_text(timeout=5000)
+                    except Exception:
+                        continue
+                    if is_dedao_logged_in_page(page.url, text):
+                        return True
+                    if is_dedao_login_page(page.url, text):
+                        return False
+                return False
             finally:
                 self._close_context(browser, context)
 

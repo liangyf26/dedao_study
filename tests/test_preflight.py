@@ -355,10 +355,14 @@ class PreflightTests(unittest.TestCase):
 
             self.assertFalse(result.ok)
             text = "\n".join(result.errors)
-            self.assertIn("dedao.auth_state_path inside project must stay under data\\auth", text)
-            self.assertIn("dedao.browser_profile_dir inside project must stay under data\\browser_profile", text)
-            self.assertIn("dedao.failure_snapshot_dir inside project must stay under data\\page_failures", text)
-            self.assertIn("transcription.temp_dir inside project must stay under data\\media_cache", text)
+            auth_dir = str(Path("data") / "auth")
+            profile_dir = str(Path("data") / "browser_profile")
+            failures_dir = str(Path("data") / "page_failures")
+            media_dir = str(Path("data") / "media_cache")
+            self.assertIn(f"dedao.auth_state_path inside project must stay under {auth_dir}", text)
+            self.assertIn(f"dedao.browser_profile_dir inside project must stay under {profile_dir}", text)
+            self.assertIn(f"dedao.failure_snapshot_dir inside project must stay under {failures_dir}", text)
+            self.assertIn(f"transcription.temp_dir inside project must stay under {media_dir}", text)
 
 
 if __name__ == "__main__":

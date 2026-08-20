@@ -139,7 +139,7 @@ def _load_config_data(path: Path) -> dict[str, Any]:
 
 
 def _path(value: str, root_dir: Path) -> Path:
-    path = Path(value)
+    path = Path(value).expanduser()
     if path.is_absolute():
         return path
     return root_dir / path

@@ -84,7 +84,7 @@ load config
 
 ```yaml
 obsidian:
-  vault_path: "D:\\biji\\openclaw-vault\\5-收件箱(Inbox)"
+  vault_path: "~/biji/openclaw-vault/5-收件箱(Inbox)"
   output_dir: "得到"
   filename_pattern: "{column}-{published_date}-{title}.md"
 
@@ -743,7 +743,7 @@ dedao-sync.timer
 - 飞书机器人是否开启签名校验。
 - Windows 和 Debian 的硬件配置，尤其是 GPU 和内存。
 - 是否允许保存原始 HTML 片段用于调试。
-- Debian 与 `D:\biji\openclaw-vault` 的最终同步方式。
+- Debian 与 `~/biji/openclaw-vault` 的最终同步方式。
 
 ## 20. 策略修正与置信门槛
 

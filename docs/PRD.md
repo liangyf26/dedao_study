@@ -37,7 +37,7 @@
 
 - 便于首次网页登录、扫码、验证码、人机校验等人工交互。
 - 便于观察网页结构和调试浏览器自动化。
-- Obsidian vault 已位于 Windows 本地路径：`D:\biji\openclaw-vault`，本项目的内容放在： `D:\biji\openclaw-vault\5-收件箱(Inbox)\得到\` 下。
+- Obsidian vault 已位于本地路径：`~/biji/openclaw-vault`，本项目的内容放在： `~/biji/openclaw-vault/5-收件箱(Inbox)/得到/` 下。
 - 早期任务以网页文字稿同步为主，对 24 小时常驻要求不高。
 
 ### 稳定阶段
@@ -88,7 +88,7 @@
 
 配置文件建议为 `config.yaml`，包含：
 
-- Obsidian vault 路径：`D:\biji\openclaw-vault\5-收件箱(Inbox)`
+- Obsidian vault 路径：`~/biji/openclaw-vault/5-收件箱(Inbox)`
 - 输出子目录：`得到`
 - 栏目列表
 - 每日运行时间
@@ -155,7 +155,7 @@ MVP 阶段只记录无文字稿状态，不强制实现转录。
 输出根目录：
 
 ```text
-D:\biji\openclaw-vault\5-收件箱(Inbox)\得到\
+~/biji/openclaw-vault/5-收件箱(Inbox)/得到/
 ```
 
 文件结构：

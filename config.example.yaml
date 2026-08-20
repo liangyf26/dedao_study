@@ -1,5 +1,5 @@
 obsidian:
-  vault_path: "D:\\biji\\openclaw-vault\\5-收件箱(Inbox)"
+  vault_path: "~/biji/openclaw-vault/5-收件箱(Inbox)"
   output_dir: "得到"
   filename_pattern: "{column}-{published_date}-{title}.md"
 
