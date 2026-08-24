@@ -348,6 +348,68 @@ class CrawlerTests(unittest.TestCase):
         self.assertEqual([item.dedao_id for item in items], ["kzlWERBr6meVb1WxWPK2j7LD4Od3Zp", "y7GQpR6ndOgX6kYAYmK8eBvPzMN4lw"])
         self.assertEqual(items[0].published_at, "2026-06-09")
 
+    def test_list_items_loads_course_pages_until_next_page_is_false(self):
+        class FakePage:
+            def __init__(self):
+                self.loaded_items = 1
+
+            def goto(self, url, **kwargs):
+                self.url = url
+
+            def wait_for_load_state(self, *args, **kwargs):
+                pass
+
+            def wait_for_timeout(self, milliseconds):
+                pass
+
+            def evaluate(self, script, *args):
+                if "window.scrollBy" in script:
+                    self.loaded_items += 1
+                    return None
+                if "contentArticleList" in script:
+                    return self.loaded_items < 3
+                raise AssertionError(f"unexpected evaluate script: {script}")
+
+            def eval_on_selector_all(self, selector, script):
+                return [
+                    {
+                        "href": f"https://www.dedao.cn/course/article?id=article-{index}",
+                        "text": f"课程第 {index} 期",
+                    }
+                    for index in range(self.loaded_items)
+                ]
+
+        class FakeContext:
+            def __init__(self):
+                self.page = FakePage()
+
+            def new_page(self):
+                return self.page
+
+            def close(self):
+                pass
+
+        class FakePlaywrightManager:
+            def __enter__(self):
+                return object()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeCrawler(DedaoCrawler):
+            def _sync_playwright(self):
+                return lambda: FakePlaywrightManager()
+
+            def _new_context(self, playwright):
+                return None, FakeContext()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            crawler = FakeCrawler(self._config(Path(tmp)))
+
+            result = crawler.list_items(ColumnConfig("栏目", "https://www.dedao.cn/course/detail?id=course"))
+
+        self.assertEqual([item.dedao_id for item in result.items], ["article-0", "article-1", "article-2"])
+
     def test_capture_aiquan_article_response_keeps_minimal_fields(self):
         class FakeResponse:
             url = "https://aiquan.dedao.cn/aichannel/sphere/v1/app/special/article_list"

@@ -321,12 +321,38 @@ class DedaoCrawler:
             return
 
     @staticmethod
-    def _scroll_page(page, *, steps: int = 4, wait_ms: int = 800) -> None:
-        for _ in range(steps):
+    def _course_page_has_next_page(page) -> bool | None:
+        try:
+            return page.evaluate(
+                """() => {
+                    let best = null;
+                    for (const el of document.querySelectorAll('*')) {
+                        for (const key of Object.keys(el)) {
+                            if (!key.startsWith('__vue')) continue;
+                            const vm = el[key];
+                            const data = vm && vm.$data;
+                            if (!data || !Array.isArray(data.contentArticleList)) continue;
+                            if (!best || data.contentArticleList.length > best.length) best = data;
+                        }
+                    }
+                    return best ? Boolean(best.nextPage) : null;
+                }"""
+            )
+        except Exception:
+            return None
+
+    @classmethod
+    def _scroll_page(cls, page, *, steps: int = 4, max_steps: int = 50, wait_ms: int = 800) -> None:
+        for index in range(max_steps):
             try:
                 page.evaluate("window.scrollBy(0, Math.max(window.innerHeight, 800))")
                 page.wait_for_timeout(wait_ms)
             except Exception:
+                return
+            has_next_page = cls._course_page_has_next_page(page)
+            if has_next_page is False:
+                return
+            if has_next_page is None and index + 1 >= steps:
                 return
 
     @staticmethod
