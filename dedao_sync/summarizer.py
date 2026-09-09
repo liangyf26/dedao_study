@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import replace
 from typing import Any
+from uuid import uuid4
 
 from .models import ContentDetail, SummaryConfig, SummaryResult
 from .security import redact
@@ -59,6 +60,7 @@ class OpenAICompatibleSummaryService(SummaryService):
         if not base_url or not api_key:
             raise SummaryError("summary API env is not configured")
         endpoint = chat_completions_url(base_url)
+        session_id = str(uuid4())
         try:
             return self._summarize_with_prompt(
                 detail,
@@ -66,6 +68,7 @@ class OpenAICompatibleSummaryService(SummaryService):
                 api_key,
                 base_url,
                 build_summary_prompt(detail),
+                session_id=session_id,
                 max_tokens=SUMMARY_MAX_TOKENS,
             )
         except SummaryError as exc:
@@ -78,6 +81,7 @@ class OpenAICompatibleSummaryService(SummaryService):
                     api_key,
                     base_url,
                     build_compact_summary_prompt(detail),
+                    session_id=session_id,
                     max_tokens=SUMMARY_COMPACT_MAX_TOKENS,
                 )
             except SummaryError as compact_exc:
@@ -89,6 +93,7 @@ class OpenAICompatibleSummaryService(SummaryService):
                     api_key,
                     base_url,
                     build_ultra_compact_summary_prompt(detail),
+                    session_id=session_id,
                     max_tokens=SUMMARY_ULTRA_COMPACT_MAX_TOKENS,
                 )
 
@@ -100,6 +105,7 @@ class OpenAICompatibleSummaryService(SummaryService):
         base_url: str,
         prompt: str,
         *,
+        session_id: str,
         max_tokens: int,
     ) -> SummaryResult:
         payload = {
@@ -125,6 +131,7 @@ class OpenAICompatibleSummaryService(SummaryService):
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "User-Agent": SUMMARY_API_USER_AGENT,
+                "X-OpenCode-Session": session_id,
             },
             method="POST",
         )

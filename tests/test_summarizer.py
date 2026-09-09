@@ -158,6 +158,7 @@ class SummarizerTests(unittest.TestCase):
             captured["content_type"] = request.get_header("Content-type")
             captured["accept"] = request.get_header("Accept")
             captured["user_agent"] = request.get_header("User-agent")
+            captured["session"] = request.get_header("X-opencode-session")
             captured["timeout"] = timeout
             captured["payload"] = json.loads(request.data.decode("utf-8"))
             return FakeHttpResponse(
@@ -192,6 +193,7 @@ class SummarizerTests(unittest.TestCase):
         self.assertEqual(captured["content_type"], "application/json")
         self.assertEqual(captured["accept"], "application/json")
         self.assertEqual(captured["user_agent"], "dedao-sync/0.1")
+        self.assertRegex(captured["session"], r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
         self.assertEqual(captured["timeout"], 7)
         self.assertEqual(captured["payload"]["model"], "deepseek-v4-pro")
         self.assertEqual(captured["payload"]["max_tokens"], 2200)
