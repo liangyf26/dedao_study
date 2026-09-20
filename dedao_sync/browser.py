@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from .models import AppConfig
@@ -22,6 +23,12 @@ def is_dedao_login_page(url: str, text: str) -> bool:
 
 def is_dedao_logged_in_page(url: str, text: str) -> bool:
     if is_dedao_login_page(url, text):
+        return False
+    # The anonymous bought-page shell also contains "最近学习". Its standalone
+    # login/register navigation must not count as an authenticated session.
+    # Keep this out of is_dedao_login_page: the crawler should still wait for
+    # client-side hydration to replace the anonymous shell with account content.
+    if re.search(r"(?:^|\s)登录\s+注册(?:\s|$)", text):
         return False
     if any(marker in text for marker in DEDAO_LOGGED_IN_MARKERS):
         return True

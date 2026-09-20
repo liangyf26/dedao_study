@@ -22,6 +22,45 @@ if (( sync_status != 0 )); then
 fi
 
 cd "$VAULT_DIR"
+
+# 年份目录整理：新生成的扁平笔记移进 YYYY 子目录（与全库年份结构一致，2026-09-10 起）
+organize_notes_into_years() {
+    local column_dir f year
+    for column_dir in "$VAULT_DIR/$NOTES_PATH"/*/; do
+        [[ -d "$column_dir" ]] || continue
+        case "$(basename "$column_dir")" in
+            20[0-9][0-9]) continue ;;   # 已是年份目录，跳过
+        esac
+        for f in "$column_dir"*.md; do
+            [[ -f "$f" ]] || continue
+            year=$(basename "$f" | /usr/bin/sed -nE 's/^[^-]+-([0-9]{4})-[0-9]{2}-[0-9]{2}-.*/\1/p')
+            [[ -n "$year" ]] || continue
+            /usr/bin/mkdir -p "$column_dir$year"
+            /usr/bin/mv "$f" "$column_dir$year/"
+        done
+    done
+}
+organize_notes_into_years
+
+# Keep retries/resummarization pointed at the notes after year-directory moves.
+PYTHONPATH="$PROJECT_DIR" "$PROJECT_DIR/.venv/bin/python" - "$CONFIG_PATH" <<'PYTHON'
+import sys
+from dedao_sync.archive import reconcile_archived_note_paths
+from dedao_sync.config import load_config
+from dedao_sync.locking import RunLock
+from dedao_sync.repository import SyncRepository
+from dedao_sync.sync import default_db_path, default_lock_path
+
+config = load_config(sys.argv[1])
+lock = RunLock(default_lock_path(config.root_dir))
+lock.acquire()
+try:
+    count = reconcile_archived_note_paths(SyncRepository(default_db_path(config.root_dir)), config.output_root)
+    print(f"dedao archive reconciled {count} database path(s)")
+finally:
+    lock.release()
+PYTHON
+
 pathspec_file=$(/usr/bin/mktemp)
 trap 'rm -f "$pathspec_file"' EXIT
 
@@ -36,4 +75,5 @@ else
     echo 'dedao sync produced no new notes'
 fi
 
-GIT_TERMINAL_PROMPT=0 /usr/bin/git push origin HEAD:main
+# VPS3 不再直推 GitHub：笔记经坚果云 bisync → VPS1 统一聚合推送（2026-09-10 起）
+# 保留本地 commit 作历史，push 职责已移交 VPS1

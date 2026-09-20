@@ -38,6 +38,20 @@ class BrowserTests(unittest.TestCase):
 
         self.assertTrue(is_dedao_logged_in_page("https://www.dedao.cn/bought", text))
 
+    def test_dedao_login_detector_rejects_anonymous_bought_shell(self):
+        # The expired-session page still renders the public "最近学习" navigation.
+        for separator in ("\n", " "):
+            text = separator.join([
+                "得到一下", "得到大脑", "知识城邦", "账户充值", "登录", "注册",
+                "首页我的学习直播", "最近学习", "课程", "电子书书架", "听书书架",
+            ])
+            with self.subTest(separator=separator):
+                self.assertFalse(is_dedao_logged_in_page("https://www.dedao.cn/bought", text))
+
+    def test_dedao_login_detector_allows_course_titles_about_login(self):
+        text = "首页\n最近学习\n已购\n退出登录\n如何实现登录 注册流程\n注册会计师训练营"
+        self.assertTrue(is_dedao_logged_in_page("https://www.dedao.cn/bought", text))
+
     def test_validate_storage_state_accepts_playwright_shape_with_auth_data(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "state.json"

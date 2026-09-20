@@ -124,6 +124,25 @@ class CrawlerTests(unittest.TestCase):
         self.assertEqual(len(page.calls), 1)
         self.assertEqual(page.calls[0][1]["wait_until"], "commit")
 
+    def test_check_login_rejects_anonymous_bought_shell(self):
+        page = mock.Mock()
+        page.url = "https://www.dedao.cn/bought"
+        page.locator.return_value.inner_text.return_value = (
+            "得到一下\n账户充值\n登录\n注册\n首页我的学习直播\n最近学习\n课程"
+        )
+        context = mock.Mock()
+        context.new_page.return_value = page
+        manager = mock.MagicMock()
+        with tempfile.TemporaryDirectory() as tmp:
+            crawler = DedaoCrawler(self._config(Path(tmp)))
+            with (
+                mock.patch.object(crawler, "_sync_playwright", return_value=lambda: manager),
+                mock.patch.object(crawler, "_new_context", return_value=(None, context)),
+                mock.patch("dedao_sync.crawler.time.time", side_effect=[0, 1, 26]),
+            ):
+                self.assertFalse(crawler.check_login())
+        context.close.assert_called_once()
+
     def test_fetch_detail_returns_login_required_for_login_page(self):
         class ExplodingExtractor:
             def from_ddarticle_payload(self, item, payload):
