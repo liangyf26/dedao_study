@@ -190,6 +190,13 @@ class MarkdownWriter:
         if not filename.endswith(".md"):
             filename = f"{filename}.md"
         column_dir = self.config.output_root / sanitize_filename_part(item.column_name)
+        if self.config.obsidian.year_subfolders and re.fullmatch(r"\d{4}-\d{2}-\d{2}", published_date):
+            try:
+                year = str(datetime.strptime(published_date, "%Y-%m-%d").year)
+            except ValueError:
+                pass
+            else:
+                column_dir = column_dir / year
         target = column_dir / filename
         if target.exists():
             target = self._collision_safe_path(target, body)

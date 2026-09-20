@@ -14,7 +14,13 @@ class ConfigTests(unittest.TestCase):
     def test_example_config_loads_without_pyyaml(self):
         config = load_config(ROOT / "config.example.yaml", root_dir=ROOT)
         self.assertEqual(config.obsidian.output_dir, "得到")
-        self.assertEqual(len(config.dedao.columns), 4)
+        self.assertTrue(config.obsidian.year_subfolders)
+        columns = {column.name: column for column in config.dedao.columns}
+        self.assertTrue(columns["得到头条"].enabled)
+        self.assertTrue(columns["得到精选"].enabled)
+        self.assertEqual(columns["得到头条"].url, "https://www.dedao.cn/course/detail?id=nb9L2q1e3OxKBPNsdoJrgN8P0Rwo6B")
+        self.assertEqual(columns["得到精选"].url, "https://www.dedao.cn/course/detail?id=b0rNAzaYOj7VyPMs09K8P54m6wlk12")
+        self.assertEqual(len(config.dedao.columns), 6)
         self.assertEqual(config.dedao.columns[0].name, "快刀青衣·快刀广播站")
         self.assertFalse(config.dedao.save_failure_html)
         self.assertEqual(config.dedao.failure_snapshot_dir, ROOT / "data" / "page_failures")

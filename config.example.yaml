@@ -1,6 +1,7 @@
 obsidian:
   vault_path: "~/biji/openclaw-vault/5-收件箱(Inbox)"
   output_dir: "得到"
+  year_subfolders: true
   filename_pattern: "{column}-{published_date}-{title}.md"
 
 dedao:
@@ -24,6 +25,12 @@ dedao:
       enabled: true
     - name: "脱不花·长谈"
       url: "https://www.dedao.cn/course/detail?id=ElLD8OrepAxVvGMs4kJ2oybGdmBnvM"
+      enabled: true
+    - name: "得到头条"
+      url: "https://www.dedao.cn/course/detail?id=nb9L2q1e3OxKBPNsdoJrgN8P0Rwo6B"
+      enabled: true
+    - name: "得到精选"
+      url: "https://www.dedao.cn/course/detail?id=b0rNAzaYOj7VyPMs09K8P54m6wlk12"
       enabled: true
 
 summary:

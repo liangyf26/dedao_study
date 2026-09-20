@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -82,6 +83,33 @@ class MarkdownTests(unittest.TestCase):
             written = path.read_text(encoding="utf-8")
             self.assertIn("## 全文稿", written)
             self.assertEqual(extract_transcript_from_note(written), "标题 测试\n\n第一段\n\n第二段")
+
+    def test_year_subfolders_follow_article_date_and_preserve_idempotency(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = make_config(root)
+            config = replace(config, obsidian=replace(config.obsidian, year_subfolders=True))
+            writer = MarkdownWriter(config)
+            for column, date, year in (("得到头条", "2025-12-31", "2025"),
+                                       ("得到精选", "2026-09-20T10:00:00+08:00", "2026")):
+                item = ContentItem(source_url="https://example.com/1", detail_url="https://example.com/1",
+                                   column_name=column, title="测试", published_at=date)
+                detail = ContentDetail(item=item, transcript_text="正文", has_transcript=True)
+                path = writer.write(detail, SummaryResult(atomic_cards=(), permanent_note=""))
+                self.assertEqual(path.parent, config.output_root / column / year)
+                self.assertEqual(writer.write(detail, SummaryResult(atomic_cards=(), permanent_note="")), path)
+                self.assertTrue(path.is_file())
+
+    def test_year_subfolders_do_not_invent_date_for_invalid_or_missing_dates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(Path(tmp))
+            config = replace(config, obsidian=replace(config.obsidian, year_subfolders=True))
+            writer = MarkdownWriter(config)
+            for date in (None, "unknown-date", "2026-02-30"):
+                item = ContentItem(source_url="https://example.com/1", detail_url="https://example.com/1",
+                                   column_name="得到头条", title="测试", published_at=date)
+                detail = ContentDetail(item=item, transcript_text="正文", has_transcript=True)
+                self.assertEqual(writer.write(detail, SummaryResult(atomic_cards=(), permanent_note="")).parent, config.output_root / "得到头条")
 
     def test_frontmatter_escapes_yaml_special_characters(self):
         self.assertEqual(

@@ -181,6 +181,7 @@ def load_config(path: str | Path = "config.yaml", *, root_dir: str | Path | None
         obsidian=ObsidianConfig(
             vault_path=_path(str(obsidian["vault_path"]), root),
             output_dir=str(obsidian.get("output_dir", "得到")),
+            year_subfolders=_bool(obsidian.get("year_subfolders", False), "obsidian.year_subfolders"),
             filename_pattern=str(obsidian.get("filename_pattern", "{column}-{published_date}-{title}.md")),
         ),
         dedao=DedaoConfig(

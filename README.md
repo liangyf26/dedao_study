@@ -2,7 +2,7 @@
 
 按 `docs/PRD.md` 和 `docs/TECH_DESIGN.md` 开发中的本地 Python 项目。
 
-当前实现聚焦 Phase 1 的地基：
+当前实现包括：
 
 - 配置加载与环境变量读取
 - SQLite 状态库
@@ -18,9 +18,39 @@
 - JSON 优先的 Zettelkasten 摘要解析，Markdown 章节兜底
 - 标准库测试覆盖幂等写入、正文 hash 去重、跨栏目 ID 碰撞、失败重试和重摘要
 
-还需要真实登录后验证得到页面结构，并补强四个栏目对应的页面选择器。当前 crawler 已有通用 anchor 发现入口，但尚未用登录态样本证明可稳定解析真实栏目。
+当前配置包含六个栏目：快刀青衣·快刀广播站、尹烨·健康参考、马江博·政经参考、脱不花·长谈、得到头条、得到精选。同步使用保存的登录态读取列表和正文，再生成摘要及 Obsidian 笔记。
 
 正文提取已加入质量门槛和候选块选择：优先从 `article`、`main`、`section` 中选择干净正文，避免把登录、分享、推荐等页面噪声写进 Obsidian。
+
+## 栏目与按年保存
+
+`config.example.yaml` 包含六个启用的栏目。2026-09-20 新增：
+
+| 栏目 | 课程 ID | 保存目录（相对 Obsidian vault） |
+| --- | --- | --- |
+| 得到头条 | `nb9L2q1e3OxKBPNsdoJrgN8P0Rwo6B` | `5-收件箱(Inbox)/得到/得到头条/YYYY/` |
+| 得到精选 | `b0rNAzaYOj7VyPMs09K8P54m6wlk12` | `5-收件箱(Inbox)/得到/得到精选/YYYY/` |
+
+设置 `obsidian.year_subfolders: true` 后，笔记直接写入“栏目/文章发表年份/”目录，
+例如 `得到/得到头条/2026/得到头条-2026-09-20-标题.md`。年份取自文章发布日期，
+不是抓取日期；缺少有效日期时暂存栏目根目录。数据库保存实际文件路径，手动同步与
+定时任务行为一致。省略该选项的旧配置继续使用原有扁平目录。
+
+`config.yaml` 不提交 Git，升级已有部署时需要将新栏目和 `year_subfolders` 设置合并进
+本地配置；不要用模板覆盖已有路径、摘要模型或通知配置。
+
+按栏目验证（每个栏目最多新增一篇，实际生成摘要并保存）：
+
+```bash
+.venv/bin/dedao-sync sync --config config.yaml --column "得到头条" --limit 1
+.venv/bin/dedao-sync sync --config config.yaml --column "得到精选" --limit 1
+```
+
+每日 `sync` 自动遍历全部启用栏目。首次加入栏目时，数据库里没有记录的历史文章也会
+被视为新增；不加 `--limit` 时会逐篇抓取并调用摘要模型，首次运行可能明显长于平日。
+列表按网站顺序读取到最后一页。长栏目不再在 50 轮翻页后静默截断；程序保留 1,000 轮
+保护上限，达到上限仍有下一页时会明确报错，不会将残缺列表当作同步成功。
+只有网站提供、且账号有权访问的内容能够同步。
 
 ## 快速开始
 
@@ -57,13 +87,13 @@ playwright install chromium
 
 PyYAML 不是 MVP 必需依赖；项目内置了覆盖当前配置模板的有限 YAML 解析器。若后续希望使用更复杂的 YAML 写法，可安装 `dedao-sync[yaml]`。
 
-更完整的本地运行步骤见 [RUNTIME_SETUP.md](D:/Project/603_dedao_study/docs/RUNTIME_SETUP.md)。
+更完整的本地运行步骤见 [RUNTIME_SETUP.md](docs/RUNTIME_SETUP.md)。
 
-Windows 定时任务设置见 [SCHEDULING.md](D:/Project/603_dedao_study/docs/SCHEDULING.md)。
+Windows 定时任务设置见 [SCHEDULING.md](docs/SCHEDULING.md)。
 
 定时任务 wrapper 会额外写 `logs/scheduled-YYYY-MM-DD.log`，用于排查 Python 启动前的任务计划失败、虚拟环境路径错误或工作目录异常。
 
-Debian systemd 常驻部署准备说明见 [DEBIAN_DEPLOY.md](D:/Project/603_dedao_study/docs/DEBIAN_DEPLOY.md)。建议 Windows MVP 连续稳定运行 7 天后再迁移。
+Debian systemd 常驻部署准备说明见 [DEBIAN_DEPLOY.md](docs/DEBIAN_DEPLOY.md)。建议 Windows MVP 连续稳定运行 7 天后再迁移。
 
 常用命令：
 
@@ -120,3 +150,22 @@ dedao-sync notify-test --config config.yaml
 飞书通知不会发送全文；除了计数和新增标题，也会列出无文字稿/待处理条目和摘要失败条目，方便从通知直接定位后续动作。若设置 `feishu.include_titles: false`，通知会隐藏条目标题和失败明细，只保留计数与日志路径。若 `feishu.enabled: true`，正式 `sync`、`retry-failed` 和 `resummarize` 会要求 webhook 环境变量存在；`check` 和 `sync --dry-run` 不发送通知，也不强制要求 webhook。
 
 当前构建尚未接入真实转录引擎，`transcription.enabled` 需要保持 `false`；设为 `true` 会让 `preflight` 失败。媒体候选只作为后续转录线索记录，不代表已经下载或处理媒体文件。
+
+## 登录失效的恢复
+
+得到的登录会话会过期。未登录的“我的学习”页面仍可能显示“最近学习”，
+同步程序会同时检查独立的“登录 / 注册”入口，避免把这个空页面误判为已登录。
+失效时任务会在抓取前报告 `login_required`。
+
+在项目目录执行 `.venv/bin/dedao-sync login --config config.yaml`，完成浏览器登录后
+回终端按 Enter 保存。随后执行 `.venv/bin/dedao-sync retry-failed --config config.yaml`
+补抓失败条目，再执行 `systemctl --user start dedao-sync.service` 验证完整定时流程。
+
+普通 `sync` 会跳过数据库中已登记的条目（包括失败记录），因此恢复登录后必须先执行
+`retry-failed`；仅等待下一次每日同步不会补抓这些历史失败项。
+建议每 25 天主动检查并更新登录，在会话标注到期前留出余量。服务端可能提前撤销会话，
+每日同步仍会做在线登录检查，并通过已配置的飞书通知报告失效；请关注
+`login_required`、`partial_failed`，以及每天预期时间后没有收到运行结果的情况。
+
+Linux 定时脚本将笔记移入年份目录后，会核对正文哈希或来源信息，并同步校正数据库
+中的文件路径，避免后续补摘要找不到已归档的笔记。

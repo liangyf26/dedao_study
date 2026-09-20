@@ -35,6 +35,7 @@ class ObsidianConfig:
     vault_path: Path
     output_dir: str
     filename_pattern: str
+    year_subfolders: bool = False
 
 
 @dataclass(frozen=True)

@@ -92,7 +92,7 @@ feishu:
 
 ## 6. 页面结构调试
 
-登录后先保存四个栏目页面快照：
+登录后可保存需要验证的栏目页面快照：
 
 ```powershell
 .venv\Scripts\dedao-sync.exe inspect-page --config config.yaml "https://www.dedao.cn/course/detail?id=zp9lB3q0breKZq4sDWXYjyWxG64dg2"

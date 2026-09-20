@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from dedao_sync.crawler import DedaoCrawler
+from dedao_sync.crawler import CrawlerError, DedaoCrawler
 from dedao_sync.models import (
     AppConfig,
     ColumnConfig,
@@ -36,6 +36,25 @@ class CrawlerTests(unittest.TestCase):
             feishu=FeishuConfig(False, "WEBHOOK", "SECRET"),
             root_dir=root,
         )
+
+    def test_course_pagination_continues_beyond_fifty_rounds(self):
+        page = mock.Mock()
+        with mock.patch.object(DedaoCrawler, "_course_page_has_next_page", side_effect=[True] * 59 + [False]):
+            DedaoCrawler._scroll_page(page, wait_ms=0)
+        self.assertEqual(page.evaluate.call_count, 60)
+
+    def test_course_pagination_limit_reports_incomplete_list(self):
+        page = mock.Mock()
+        with mock.patch.object(DedaoCrawler, "_course_page_has_next_page", return_value=True):
+            with self.assertRaisesRegex(CrawlerError, "分页未完成"):
+                DedaoCrawler._scroll_page(page, max_steps=3, wait_ms=0)
+
+    def test_course_pagination_stops_at_end_or_uses_generic_fallback(self):
+        for has_next, rounds in ((False, 1), (None, 4)):
+            page = mock.Mock()
+            with mock.patch.object(DedaoCrawler, "_course_page_has_next_page", return_value=has_next):
+                DedaoCrawler._scroll_page(page, wait_ms=0)
+            self.assertEqual(page.evaluate.call_count, rounds)
 
     def test_new_context_reuses_persistent_profile_when_present(self):
         class FakeChromium:

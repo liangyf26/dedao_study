@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import hashlib
 import random
 import re
@@ -14,6 +15,9 @@ from .browser import is_dedao_logged_in_page, is_dedao_login_page
 from .extractor import TranscriptExtractor
 from .models import AppConfig, ColumnConfig, ContentDetail, ContentItem
 from .time_utils import APP_TIMEZONE, now_local
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class CrawlerError(RuntimeError):
@@ -342,18 +346,21 @@ class DedaoCrawler:
             return None
 
     @classmethod
-    def _scroll_page(cls, page, *, steps: int = 4, max_steps: int = 50, wait_ms: int = 800) -> None:
+    def _scroll_page(cls, page, *, steps: int = 4, max_steps: int = 1000, wait_ms: int = 800) -> None:
         for index in range(max_steps):
             try:
                 page.evaluate("window.scrollBy(0, Math.max(window.innerHeight, 800))")
                 page.wait_for_timeout(wait_ms)
-            except Exception:
-                return
+            except Exception as exc:
+                raise CrawlerError("栏目列表翻页失败，未返回不完整列表") from exc
             has_next_page = cls._course_page_has_next_page(page)
             if has_next_page is False:
                 return
             if has_next_page is None and index + 1 >= steps:
                 return
+            if (index + 1) % 50 == 0:
+                LOGGER.info("course pagination: %d rounds; more articles remain", index + 1)
+        raise CrawlerError(f"栏目列表分页未完成：达到 {max_steps} 轮上限，请检查页面加载或调整分页上限")
 
     @staticmethod
     def jittered_delay_seconds(base_seconds: float) -> float:

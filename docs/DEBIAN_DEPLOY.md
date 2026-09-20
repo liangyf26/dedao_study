@@ -101,3 +101,20 @@ systemctl --user stop dedao-sync.service
 - vault 路径可写，并已确认同步方式不会和 Obsidian 冲突。
 - `notify-test` 能成功发送飞书通知。
 - `summary-test` 能成功调用摘要模型。
+
+## 当前部署：六栏目每日同步（2026-09-20）
+
+当前主机项目路径为 `~/project/dedao_study`。已安装的 `dedao-sync.timer` 每天北京时间
+06:40 触发 `dedao-sync.service`，实际入口为 `scripts/run_scheduled_sync_and_push.sh`。
+模板中的 08:00 是新安装默认值，不代表当前主机时间。
+
+本机 `config.yaml` 已启用得到头条、得到精选及原有四个栏目，并设置
+`obsidian.year_subfolders: true`。新笔记直接写入
+`~/biji/openclaw-vault/5-收件箱(Inbox)/得到/<栏目>/<发表年份>/`。
+脚本仍兼容整理旧的扁平笔记，并校正能验证来源的数据库路径。
+
+定时脚本只提交 vault 内新生成的得到笔记到本地 Git。笔记跨机器同步及 GitHub 推送
+由坚果云 bisync → VPS1 的现有流程负责；项目源码的提交推送与笔记推送是两条流程。
+
+新增栏目的首次运行可能涉及较多历史文章和摘要调用。可先按 README 中的
+`--column ... --limit 1` 命令验证，再由每日任务处理其余未同步条目。
