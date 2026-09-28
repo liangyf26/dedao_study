@@ -98,7 +98,7 @@ def check_config_semantics(config: AppConfig) -> PreflightResult:
     if config.dedao.request_interval_seconds < 0:
         result.add_error("dedao.request_interval_seconds must be >= 0")
 
-    if config.summary.enabled and config.summary.provider != "opencode_go":
+    if config.summary.enabled and config.summary.provider not in {"opencode_go", "volcengine"}:
         result.add_error(f"Unsupported summary provider: {config.summary.provider}")
 
     required_fields = {"column", "published_date", "title"}

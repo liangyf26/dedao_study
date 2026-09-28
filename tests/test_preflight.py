@@ -289,6 +289,25 @@ class PreflightTests(unittest.TestCase):
             self.assertIn("Unsupported summary provider", text)
             self.assertIn("filename_pattern missing fields", text)
 
+    def test_volcengine_summary_provider_is_supported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = load_config(
+                write_config(
+                    root,
+                    overrides={
+                        "summary": {"enabled": True, "provider": "volcengine"},
+                    },
+                )
+            )
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+
+            result = PreflightChecker(config).check()
+
+            self.assertTrue(result.ok, result.errors)
+
     def test_no_enabled_columns_is_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

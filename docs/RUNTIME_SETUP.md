@@ -189,7 +189,7 @@ dedao:
 
 当某篇内容没有网页文字稿但页面里存在媒体候选时，失败记录和 `list --failed` / `list --run-id` 会显示 `media_candidates=<数量>` 以及最多前三种候选类型，作为后续转录排查线索。
 
-`doctor` 和 `preflight` 都会检查栏目配置和文件命名模板：至少一个栏目启用、栏目名不重复、栏目 URL 是 `http(s)`、请求间隔非负、`summary.provider` 是当前支持的 `opencode_go`，`obsidian.output_dir` 必须是 vault 内部的相对路径，以及 `filename_pattern` 只使用并且必须包含 `{column}`、`{published_date}`、`{title}`。
+`doctor` 和 `preflight` 都会检查栏目配置和文件命名模板：至少一个栏目启用、栏目名不重复、栏目 URL 是 `http(s)`、请求间隔非负、`summary.provider` 是当前支持的 `opencode_go` 或 `volcengine`，`obsidian.output_dir` 必须是 vault 内部的相对路径，以及 `filename_pattern` 只使用并且必须包含 `{column}`、`{published_date}`、`{title}`。
 
 如果登录态、浏览器 profile、失败 HTML 快照或媒体缓存路径配置在项目目录内，它们必须保留在默认的 `data/auth/`、`data/browser_profile/`、`data/page_failures/`、`data/media_cache/` 下。这些目录已加入 `.gitignore`；若确实要改到其他位置，建议放到项目目录外。
 
