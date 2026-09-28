@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR=/home/lyf/project/dedao_study
-VAULT_DIR=/home/lyf/biji/openclaw-vault
+PROJECT_DIR=${DEDAO_PROJECT_DIR:-/home/lyf/project/dedao_study}
+VAULT_DIR=${DEDAO_VAULT_DIR:-/home/lyf/biji/openclaw-vault}
 NOTES_PATH='5-收件箱(Inbox)/得到'
-SYNC_BIN="$PROJECT_DIR/.venv/bin/dedao-sync"
-CONFIG_PATH="$PROJECT_DIR/config.yaml"
+SYNC_BIN=${DEDAO_SYNC_BIN:-"$PROJECT_DIR/.venv/bin/dedao-sync"}
+CONFIG_PATH=${DEDAO_CONFIG_PATH:-"$PROJECT_DIR/config.yaml"}
+SYNC_TIMEOUT=${DEDAO_SYNC_TIMEOUT:-2h}
 
 # The sync command has its own lock; this lock protects the vault Git operation.
 exec 9>"$PROJECT_DIR/data/dedao_sync_git.lock"
@@ -15,8 +16,13 @@ if ! /usr/bin/flock -n 9; then
 fi
 
 sync_status=0
-"$SYNC_BIN" sync --config "$CONFIG_PATH" || sync_status=$?
+/usr/bin/timeout --signal=TERM --kill-after=30s "$SYNC_TIMEOUT" \
+    "$SYNC_BIN" sync --config "$CONFIG_PATH" || sync_status=$?
 if (( sync_status != 0 )); then
+    if (( sync_status == 124 )); then
+        echo "dedao sync timed out after $SYNC_TIMEOUT; skipping Git commit/push" >&2
+        exit 124
+    fi
     echo "dedao sync failed; skipping Git commit/push (exit=$sync_status)" >&2
     exit "$sync_status"
 fi

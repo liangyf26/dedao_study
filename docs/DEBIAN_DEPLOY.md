@@ -68,6 +68,21 @@ systemctl --user status dedao-sync.service
 journalctl --user -u dedao-sync.service -n 100 --no-pager
 ```
 
+定时脚本默认给同步命令 2 小时运行预算。达到上限后先发送 `TERM`，30 秒后仍未退出则
+强制结束；此时脚本返回 `124`，并跳过笔记的 Git 提交。systemd service 另设
+`TimeoutStartSec=2h10min` 作为最终保护，并通过 `KillMode=control-group` 清理
+Playwright 和 Chromium 子进程。可在测试或特殊部署中用环境变量调整脚本预算：
+
+```bash
+DEDAO_SYNC_TIMEOUT=30m scripts/run_scheduled_sync_and_push.sh
+```
+
+遇到 service 长时间没有新日志时，可停止本次任务而不影响下一次定时触发：
+
+```bash
+systemctl --user stop dedao-sync.service
+```
+
 项目内部日志仍会写入：
 
 ```text

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -49,9 +53,46 @@ class ScriptTests(unittest.TestCase):
         self.assertIn("WorkingDirectory=%h/dedao-sync", service)
         self.assertIn("EnvironmentFile=%h/dedao-sync/.env", service)
         self.assertIn("ExecStart=%h/dedao-sync/.venv/bin/dedao-sync sync --config %h/dedao-sync/config.yaml", service)
+        self.assertIn("TimeoutStartSec=2h10min", service)
+        self.assertIn("TimeoutStopSec=45s", service)
+        self.assertIn("KillMode=control-group", service)
         self.assertIn("OnCalendar=*-*-* 08:00:00", timer)
         self.assertIn("Persistent=true", timer)
         self.assertIn("WantedBy=timers.target", timer)
+
+    def test_scheduled_script_times_out_hung_sync_before_git_step(self):
+        script = ROOT / "scripts" / "run_scheduled_sync_and_push.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "data").mkdir()
+            sync_bin = root / "fake-dedao-sync"
+            sync_bin.write_text("#!/usr/bin/env bash\nsleep 30\n", encoding="utf-8")
+            sync_bin.chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "DEDAO_PROJECT_DIR": str(root),
+                    "DEDAO_VAULT_DIR": str(root / "vault-that-must-not-be-used"),
+                    "DEDAO_SYNC_BIN": str(sync_bin),
+                    "DEDAO_CONFIG_PATH": str(root / "config.yaml"),
+                    "DEDAO_SYNC_TIMEOUT": "1s",
+                }
+            )
+
+            started = time.monotonic()
+            result = subprocess.run(
+                [str(script)],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=5,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 124)
+            self.assertLess(time.monotonic() - started, 4)
+            self.assertIn("timed out after 1s", result.stderr)
+            self.assertNotIn("dedao sync produced no new notes", result.stdout)
 
     def test_bootstrap_script_resolves_default_project_root_in_body(self):
         text = (ROOT / "scripts" / "bootstrap_windows.ps1").read_text(encoding="utf-8")
