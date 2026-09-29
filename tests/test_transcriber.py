@@ -9,8 +9,8 @@ from unittest import mock
 
 from dedao_sync.models import MediaCandidate, TranscriptionConfig
 from dedao_sync.transcriber import (
+    S3AITranscriptionService,
     TranscriptionError,
-    VolcengineDirectTranscriptionService,
     cleanup_audio_segments,
     ensure_unencrypted_hls,
     parse_hls_duration,
@@ -64,27 +64,69 @@ class TranscriberTests(unittest.TestCase):
             cleanup_audio_segments([segment])
             self.assertFalse(work.exists())
 
-    def test_volcengine_adapter_does_not_call_without_free_entitlement(self):
+    def test_s3ai_adapter_blocks_unconfirmed_costs(self):
         with tempfile.TemporaryDirectory() as tmp:
             audio = Path(tmp) / "part.mp3"
             audio.touch()
-            config = TranscriptionConfig(True, "volcengine", True, Path(tmp))
-            service = VolcengineDirectTranscriptionService(config)
+            config = TranscriptionConfig(True, "s3ai", True, Path(tmp))
+            service = S3AITranscriptionService(config)
             with mock.patch.dict(os.environ, {config.api_key_env: "test", config.endpoint_env: "https://asr.example/api"}):
-                with self.assertRaisesRegex(TranscriptionError, "free ASR entitlement"):
+                with self.assertRaisesRegex(TranscriptionError, "cost entitlement"):
                     service.transcribe(audio)
 
-    def test_volcengine_adapter_fails_closed_until_protocol_is_verified(self):
+    def test_s3ai_adapter_fails_over_response_schemas(self):
         with tempfile.TemporaryDirectory() as tmp:
             audio = Path(tmp) / "part.mp3"
-            audio.touch()
-            config = TranscriptionConfig(True, "volcengine", True, Path(tmp), free_tier_confirmed=True)
-            service = VolcengineDirectTranscriptionService(config)
+            audio.write_bytes(b"audio")
+            config = TranscriptionConfig(True, "s3ai", True, Path(tmp), free_tier_confirmed=True)
+            service = S3AITranscriptionService(config)
+            responses = [
+                {"result": {"text": "第一段"}},
+                {"text": "第二段"},
+            ]
+            def fake_request(base, key, model, path):
+                return responses.pop(0)["result"]["text"] if model.startswith("whisper") else responses.pop(0)["text"]
             with mock.patch.dict(os.environ, {config.api_key_env: "test", config.endpoint_env: "https://asr.example/api"}):
-                with mock.patch("urllib.request.urlopen") as urlopen:
-                    with self.assertRaisesRegex(TranscriptionError, "protocol is not enabled"):
-                        service.transcribe(audio)
-            urlopen.assert_not_called()
+                with mock.patch.object(service, "_request", side_effect=fake_request):
+                    self.assertEqual(service.transcribe(audio), "第一段")
+                    self.assertEqual(service.selected_model, config.models[0])
+
+    def test_s3ai_request_uses_multipart_and_parses_whisper_envelope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "part.wav"
+            audio.write_bytes(b"RIFF-audio")
+            config = TranscriptionConfig(True, "s3ai", True, Path(tmp), free_tier_confirmed=True)
+            service = S3AITranscriptionService(config)
+            captured = {}
+
+            class Response:
+                status = 200
+                def __enter__(self): return self
+                def __exit__(self, *args): return False
+                def read(self, limit):
+                    return '{"result":{"text":"中文结果"}}'.encode("utf-8")
+
+            def fake_urlopen(request, timeout):
+                captured["url"] = request.full_url
+                captured["content_type"] = request.get_header("Content-type")
+                captured["auth"] = request.get_header("Authorization")
+                captured["body"] = request.data
+                captured["timeout"] = timeout
+                return Response()
+
+            with mock.patch.dict(os.environ, {config.api_key_env: "secret", config.endpoint_env: "https://s3ai.example/v1"}):
+                with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                    self.assertEqual(service.transcribe(audio), "中文结果")
+            self.assertEqual(captured["url"], "https://s3ai.example/v1/audio/transcriptions")
+            self.assertIn("multipart/form-data", captured["content_type"])
+            self.assertIn(b"whisper-large-v3-turbo", captured["body"])
+            self.assertIn(b"language", captured["body"])
+            self.assertNotIn(b"secret", captured["body"])
+
+        from dedao_sync.transcriber import clean_transcript, extract_s3ai_text
+        self.assertEqual(extract_s3ai_text({"result": {"text": "结果"}}), "结果")
+        self.assertEqual(extract_s3ai_text({"text": "顶层"}), "顶层")
+        self.assertEqual(clean_transcript("你好<|noise|> 😡\n世界"), "你好 世界")
 
 
 if __name__ == "__main__":

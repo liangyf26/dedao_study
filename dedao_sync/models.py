@@ -68,8 +68,14 @@ class TranscriptionConfig:
     delete_media_after_transcription: bool
     temp_dir: Path
     free_tier_confirmed: bool = False
-    api_key_env: str = "VOLCENGINE_ASR_API_KEY"
-    endpoint_env: str = "VOLCENGINE_ASR_ENDPOINT"
+    api_key_env: str = "S3AI_API_KEY"
+    endpoint_env: str = "S3AI_BASE_URL"
+    models: tuple[str, ...] = (
+        "whisper-large-v3-turbo",
+        "FunAudioLLM/SenseVoiceSmall",
+        "TeleAI/TeleSpeechASR",
+    )
+    model_retries: int = 1
     max_duration_seconds: int = 14400
     max_audio_bytes: int = 100_000_000
     request_timeout_seconds: int = 120

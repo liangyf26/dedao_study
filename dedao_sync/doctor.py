@@ -142,9 +142,31 @@ def run_doctor(config_path: str | Path = "config.yaml", *, require_auth: bool = 
     if config.transcription.enabled:
         checks.append(
             DoctorCheck(
+                "transcription_provider",
+                "ok" if config.transcription.provider == "s3ai" else "error",
+                config.transcription.provider,
+            )
+        )
+        checks.append(
+            DoctorCheck(
                 "transcription_free_entitlement",
                 "ok" if config.transcription.free_tier_confirmed else "error",
                 "explicitly confirmed" if config.transcription.free_tier_confirmed else "not confirmed; ASR is blocked",
+            )
+        )
+        for env_name in (config.transcription.endpoint_env, config.transcription.api_key_env):
+            checks.append(
+                DoctorCheck(
+                    f"env:{env_name}",
+                    "ok" if os.environ.get(env_name) else "error",
+                    "set" if os.environ.get(env_name) else "missing",
+                )
+            )
+        checks.append(
+            DoctorCheck(
+                "transcription_models",
+                "ok" if config.transcription.models else "error",
+                ", ".join(config.transcription.models),
             )
         )
         for executable in ("ffmpeg", "ffprobe"):

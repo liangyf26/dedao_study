@@ -227,12 +227,16 @@ class PreflightChecker:
 
         if self.config.transcription.enabled:
             transcription = self.config.transcription
-            if transcription.provider != "volcengine":
-                result.add_error(f"Unsupported transcription provider: {transcription.provider}")
+            if transcription.provider != "s3ai":
+                result.add_error(f"Unsupported transcription provider: {transcription.provider}; use s3ai")
             if not transcription.free_tier_confirmed:
                 result.add_error(
-                    "Transcription is fail-closed: explicitly confirm a free ASR entitlement before enabling it"
+                    "Transcription is fail-closed: explicitly confirm ASR cost entitlement before enabling it"
                 )
+            if not transcription.models:
+                result.add_error("Transcription model list must not be empty")
+            if transcription.model_retries < 0:
+                result.add_error("transcription.model_retries must be non-negative")
             if not os.environ.get(transcription.api_key_env):
                 result.add_error(f"Transcription API key env is missing: {transcription.api_key_env}")
             endpoint = os.environ.get(transcription.endpoint_env, "")
@@ -240,9 +244,6 @@ class PreflightChecker:
                 result.add_error(f"Transcription endpoint env is missing: {transcription.endpoint_env}")
             elif not is_http_url(endpoint):
                 result.add_error(f"Transcription endpoint env is not a valid http(s) URL: {transcription.endpoint_env}")
-            result.add_error(
-                "Volcengine ASR direct-upload protocol is not verified; transcription remains unavailable and no ASR request will be sent"
-            )
             if not shutil.which("ffmpeg"):
                 result.add_error("Transcription requires ffmpeg executable")
             if not shutil.which("ffprobe"):

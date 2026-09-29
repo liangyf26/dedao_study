@@ -47,12 +47,17 @@ summary:
   api_key_env: "OPENCODE_GO_API_KEY"
 
 transcription:
-  # Disabled by default. Enable only after confirming a free direct ASR entitlement.
+  # Disabled by default. Enable only after confirming ASR cost/entitlement.
   enabled: false
-  provider: "volcengine"
+  provider: "s3ai"
   free_tier_confirmed: false
-  api_key_env: "VOLCENGINE_ASR_API_KEY"
-  endpoint_env: "VOLCENGINE_ASR_ENDPOINT"
+  api_key_env: "S3AI_API_KEY"
+  endpoint_env: "S3AI_BASE_URL"
+  models:
+    - "whisper-large-v3-turbo"
+    - "FunAudioLLM/SenseVoiceSmall"
+    - "TeleAI/TeleSpeechASR"
+  model_retries: 1
   delete_media_after_transcription: true
   temp_dir: "data/media_cache"
   max_duration_seconds: 14400

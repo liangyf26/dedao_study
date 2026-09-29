@@ -264,4 +264,7 @@ def extract_transcript_from_note(markdown: str) -> str:
     marker = "\n## 全文稿\n"
     if marker not in markdown:
         return ""
-    return markdown.split(marker, 1)[1].strip()
+    transcript = markdown.split(marker, 1)[1].strip()
+    if transcript.startswith("> 机器转写，可能存在识别错误。"):
+        transcript = transcript.split("\n", 1)[1].strip() if "\n" in transcript else ""
+    return transcript

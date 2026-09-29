@@ -157,7 +157,7 @@ class PreflightTests(unittest.TestCase):
             result = PreflightChecker(config).check()
 
             self.assertFalse(result.ok)
-            self.assertTrue(any("free ASR entitlement" in error for error in result.errors))
+            self.assertTrue(any("cost entitlement" in error for error in result.errors))
 
     def test_failure_snapshot_dir_is_checked_when_enabled(self):
         with tempfile.TemporaryDirectory() as tmp:

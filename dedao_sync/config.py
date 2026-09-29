@@ -105,11 +105,18 @@ def _load_yaml_limited(path: Path) -> dict[str, Any]:
             if not isinstance(parent, list):
                 raise ConfigError(f"Unsupported YAML list placement near: {raw_line}")
             item_text = line[2:].strip()
-            item: dict[str, Any] = {}
-            parent.append(item)
             if item_text:
+                if ":" not in item_text:
+                    parent.append(_parse_scalar(item_text))
+                    continue
+                item: dict[str, Any] = {}
+                parent.append(item)
                 key, value = item_text.split(":", 1)
                 item[key.strip()] = _parse_scalar(value)
+                stack.append((indent, item))
+                continue
+            item = {}
+            parent.append(item)
             stack.append((indent, item))
             continue
 
@@ -128,6 +135,23 @@ def _load_yaml_limited(path: Path) -> dict[str, Any]:
             parent[key] = _parse_scalar(value)
             pending_key = None
     return root
+
+
+def _transcription_models(value: Any) -> tuple[str, ...]:
+    defaults = (
+        "whisper-large-v3-turbo",
+        "FunAudioLLM/SenseVoiceSmall",
+        "TeleAI/TeleSpeechASR",
+    )
+    if value is None:
+        return defaults
+    if isinstance(value, str):
+        models = tuple(part.strip() for part in value.split(",") if part.strip())
+    elif isinstance(value, (list, tuple)):
+        models = tuple(str(part).strip() for part in value if str(part).strip())
+    else:
+        raise ConfigError("transcription.models must be a list or comma-separated string")
+    return models or defaults
 
 
 def _load_config_data(path: Path) -> dict[str, Any]:
@@ -204,7 +228,7 @@ def load_config(path: str | Path = "config.yaml", *, root_dir: str | Path | None
         ),
         transcription=TranscriptionConfig(
             enabled=_bool(transcription.get("enabled", False), "transcription.enabled"),
-            provider=str(transcription.get("provider", "volcengine")),
+            provider=str(transcription.get("provider", "s3ai")),
             delete_media_after_transcription=_bool(
                 transcription.get("delete_media_after_transcription", True),
                 "transcription.delete_media_after_transcription",
@@ -214,8 +238,10 @@ def load_config(path: str | Path = "config.yaml", *, root_dir: str | Path | None
                 transcription.get("free_tier_confirmed", False),
                 "transcription.free_tier_confirmed",
             ),
-            api_key_env=str(transcription.get("api_key_env", "VOLCENGINE_ASR_API_KEY")),
-            endpoint_env=str(transcription.get("endpoint_env", "VOLCENGINE_ASR_ENDPOINT")),
+            api_key_env=str(transcription.get("api_key_env", "S3AI_API_KEY")),
+            endpoint_env=str(transcription.get("endpoint_env", "S3AI_BASE_URL")),
+            models=_transcription_models(transcription.get("models")),
+            model_retries=int(transcription.get("model_retries", 1)),
             max_duration_seconds=int(transcription.get("max_duration_seconds", 14400)),
             max_audio_bytes=int(transcription.get("max_audio_bytes", 100_000_000)),
             request_timeout_seconds=int(transcription.get("request_timeout_seconds", 120)),

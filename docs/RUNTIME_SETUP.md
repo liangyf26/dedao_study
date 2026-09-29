@@ -187,9 +187,11 @@ dedao:
 
 直播回放的 Phase 1 主路径使用得到详情接口提供的官方 SRT/VTT 字幕，不下载视频即可生成全文稿。配置直播栏目时使用 `kind: live`，并可用 `backfill_since: "2026-09-01"` 限制历史回填起点；当前示例会写入 `得到/得到直播/2026/`。官方字幕尚未生成或暂时下载失败的条目会记录为 `pending_caption`，后续运行 `sync` 或 `retry-failed` 会重新尝试。
 
-Phase 2 已加入无 TOS 的媒体安全边界、音频分块和直连 ASR 适配接口，但火山引擎直传协议与 Coding Plan 的 ASR 免费权益尚未得到官方确认，真实 ASR adapter 当前 fail-closed。请保持 `transcription.enabled: false`；即使设置为 `true`，`preflight` 也会因免费资格、端点、ffmpeg/ffprobe 或协议未核实而阻止运行，不会发送 ASR 请求或产生费用。字幕缺失时仍会记录 HLS 媒体候选和 `pending_caption`。
+Phase 2 使用 S3AI 的 OpenAI-compatible `/audio/transcriptions` 接口，不使用 TOS。当前模型故障转移顺序为 `whisper-large-v3-turbo`、`FunAudioLLM/SenseVoiceSmall`、`TeleAI/TeleSpeechASR`。Whisper 返回 `result.text`，后两个模型返回顶层 `text`；程序兼容三种响应结构，并对超时、连接错误、429、5xx 和空响应做有限重试。三个模型都失败时记录 `transcription_failed`。
 
-`doctor` 和 `preflight` 都会检查栏目配置和文件命名模板：至少一个栏目启用、栏目名不重复、栏目 URL 是 `http(s)`、请求间隔非负、`summary.provider` 是当前支持的 `opencode_go` 或 `volcengine`，`obsidian.output_dir` 必须是 vault 内部的相对路径，以及 `filename_pattern` 只使用并且必须包含 `{column}`、`{published_date}`、`{title}`。
+S3AI 转写可能产生费用，`transcription.enabled` 默认关闭；启用前必须在配置中显式确认 `free_tier_confirmed: true`，并配置 `S3AI_BASE_URL`、`S3AI_API_KEY`。程序不会自动探测模型、不会上传 TOS 对象，也不会在预检阶段发送音频请求。
+
+`doctor` 和 `preflight` 都会检查栏目配置和文件命名模板：至少一个栏目启用、栏目名不重复、栏目 URL 是 `http(s)`、请求间隔非负、`summary.provider` 是当前支持的 `opencode_go` 或 `volcengine`。启用转写时还会检查 `provider: s3ai`、S3AI 端点/密钥、模型顺序、ffmpeg/ffprobe、缓存目录和磁盘空间。`obsidian.output_dir` 必须是 vault 内部的相对路径，`filename_pattern` 只使用并且必须包含 `{column}`、`{published_date}`、`{title}`。
 
 如果登录态、浏览器 profile、失败 HTML 快照或媒体缓存路径配置在项目目录内，它们必须保留在默认的 `data/auth/`、`data/browser_profile/`、`data/page_failures/`、`data/media_cache/` 下。这些目录已加入 `.gitignore`；若确实要改到其他位置，建议放到项目目录外。
 

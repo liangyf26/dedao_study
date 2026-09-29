@@ -541,6 +541,7 @@ def run_retry_failed(
                             transcript_text=transcript,
                             has_transcript=True,
                             raw_html_hash=row["content_hash"],
+                            transcribed=bool(row["transcribed"] or 0),
                         )
                         try:
                             summary = summary_service.summarize(detail)
@@ -740,6 +741,7 @@ def run_resummarize(
                     transcript_text=transcript,
                     has_transcript=True,
                     raw_html_hash=row["content_hash"],
+                    transcribed=bool(row["transcribed"] or 0),
                 )
                 summary = summary_service.summarize(detail)
                 writer.overwrite(path, detail, summary)

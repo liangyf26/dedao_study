@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import os
+import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -39,32 +42,141 @@ class TranscriptionService:
         raise NotImplementedError
 
 
+class _TransientASRError(TranscriptionError):
+    pass
+
+
+class _FatalASRError(TranscriptionError):
+    pass
+
+
+class S3AITranscriptionService(TranscriptionService):
+    def __init__(self, config: TranscriptionConfig):
+        self.config = config
+        self.selected_model: str | None = None
+
+    @property
+    def provider(self) -> str:
+        return f"s3ai/{self.selected_model}" if self.selected_model else "s3ai"
+
+    def transcribe(self, media_path: Path) -> str:
+        if not media_path.is_file():
+            raise TranscriptionError("transcription audio file does not exist")
+        if not self.config.free_tier_confirmed:
+            raise TranscriptionError("ASR cost entitlement is not explicitly confirmed")
+        api_key = os.environ.get(self.config.api_key_env, "").strip()
+        base_url = os.environ.get(self.config.endpoint_env, "").strip().rstrip("/")
+        if not api_key:
+            raise TranscriptionError(f"ASR API key env is missing: {self.config.api_key_env}")
+        if not is_http_url(base_url):
+            raise TranscriptionError("S3AI base URL must be an http(s) URL")
+        if not self.config.models:
+            raise TranscriptionError("S3AI model list is empty")
+
+        last_error: Exception | None = None
+        for model in self.config.models:
+            for attempt in range(self.config.model_retries + 1):
+                try:
+                    text = self._request(base_url, api_key, model, media_path)
+                    self.selected_model = model
+                    return clean_transcript(text)
+                except _FatalASRError:
+                    raise
+                except (_TransientASRError, TranscriptionError) as exc:
+                    last_error = exc
+                    if isinstance(exc, TranscriptionError) and not isinstance(exc, _TransientASRError):
+                        raise
+                    if attempt < self.config.model_retries:
+                        time.sleep(min(2 ** attempt, 8))
+                        continue
+                    LOGGER.warning("S3AI ASR model failed model=%s error=%s", model, redact(exc))
+                    break
+        raise TranscriptionError(f"all S3AI ASR models failed: {redact(last_error)}")
+
+    def _request(self, base_url: str, api_key: str, model: str, media_path: Path) -> str:
+        boundary = f"----dedao-s3ai-{os.urandom(8).hex()}"
+        audio = media_path.read_bytes()
+        body = b"".join(
+            [
+                _multipart_field(boundary, "model", model),
+                _multipart_field(boundary, "language", "zh"),
+                _multipart_file(boundary, "file", media_path.name, audio),
+                f"--{boundary}--\r\n".encode("utf-8"),
+            ]
+        )
+        request = urllib.request.Request(
+            f"{base_url}/audio/transcriptions",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Accept": "application/json",
+                "Connection": "close",
+                "User-Agent": "dedao-sync/0.1",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.config.request_timeout_seconds) as response:
+                status = int(response.status)
+                raw = response.read(2_000_000).decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            raw = exc.read(2000).decode("utf-8", errors="replace")
+            if exc.code == 429 or exc.code >= 500:
+                raise _TransientASRError(f"S3AI ASR HTTP {exc.code}") from exc
+            raise _FatalASRError(f"S3AI ASR HTTP {exc.code}: {redact(raw)[:300]}") from exc
+        except (OSError, urllib.error.URLError, TimeoutError) as exc:
+            raise _TransientASRError(f"S3AI ASR transport error: {type(exc).__name__}") from exc
+        if status >= 500 or status == 429:
+            raise _TransientASRError(f"S3AI ASR HTTP {status}")
+        if status >= 400:
+            raise _FatalASRError(f"S3AI ASR HTTP {status}: {redact(raw)[:300]}")
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise _TransientASRError("S3AI ASR returned invalid JSON") from exc
+        text = extract_s3ai_text(payload)
+        if not text:
+            raise _TransientASRError("S3AI ASR returned empty text")
+        return text
+
+
+def _multipart_field(boundary: str, name: str, value: str) -> bytes:
+    return (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+    ).encode("utf-8")
+
+
+def _multipart_file(boundary: str, name: str, filename: str, data: bytes) -> bytes:
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    header = (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n"
+        f"Content-Type: {content_type}\r\n\r\n"
+    ).encode("utf-8")
+    return header + data + b"\r\n"
+
+
+def extract_s3ai_text(payload: object) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    result = payload.get("result")
+    if isinstance(result, dict) and isinstance(result.get("text"), str):
+        return result["text"].strip()
+    if isinstance(payload.get("text"), str):
+        return payload["text"].strip()
+    return ""
+
+
+def clean_transcript(text: str) -> str:
+    text = re.sub(r"<\|[^|\n]+\|>", "", text)
+    text = re.sub(r"[\x00-\x1f\x7f]", " ", text)
+    text = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 class DisabledTranscriptionService(TranscriptionService):
     def transcribe(self, media_path: Path) -> str:
         raise TranscriptionError("Transcription is disabled")
-
-
-class VolcengineDirectTranscriptionService(TranscriptionService):
-    """Fail-closed direct audio adapter until the official API contract is verified."""
-
-    def __init__(self, config: TranscriptionConfig):
-        self.config = config
-
-    def transcribe(self, media_path: Path) -> str:
-        if not self.config.free_tier_confirmed:
-            raise TranscriptionError("free ASR entitlement is not explicitly confirmed")
-        if not os.environ.get(self.config.api_key_env):
-            raise TranscriptionError(f"ASR API key env is missing: {self.config.api_key_env}")
-        endpoint = os.environ.get(self.config.endpoint_env, "").strip()
-        if not endpoint:
-            raise TranscriptionError(f"ASR endpoint env is missing: {self.config.endpoint_env}")
-        if not is_http_url(endpoint):
-            raise TranscriptionError("ASR endpoint must be an http(s) URL")
-        if not media_path.is_file():
-            raise TranscriptionError("transcription audio file does not exist")
-        raise TranscriptionError(
-            "Volcengine ASR request protocol is not enabled until the official direct-upload contract is verified"
-        )
 
 
 def is_http_url(value: str) -> bool:
@@ -244,15 +356,16 @@ def transcribe_detail_media(
         transcript = transcribe_segments(service, segments)
     finally:
         cleanup_audio_segments(segments)
-    return TranscriptionResult(text=transcript, provider=config.provider)
+    provider = getattr(service, "provider", config.provider)
+    return TranscriptionResult(text=transcript, provider=provider)
 
 
 def create_transcription_service(config: TranscriptionConfig) -> TranscriptionService:
     if not config.enabled:
         return DisabledTranscriptionService()
-    if config.provider == "volcengine":
-        return VolcengineDirectTranscriptionService(config)
-    raise TranscriptionError(f"unsupported transcription provider: {config.provider}")
+    if config.provider == "s3ai":
+        return S3AITranscriptionService(config)
+    raise TranscriptionError(f"unsupported transcription provider: {config.provider}; use s3ai")
 
 
 def cleanup_audio_segments(segments: list[Path]) -> None:
