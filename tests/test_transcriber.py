@@ -39,6 +39,58 @@ class TranscriberTests(unittest.TestCase):
         with self.assertRaisesRegex(TranscriptionError, "no usable"):
             parse_hls_duration("#EXTM3U\n#EXT-X-ENDLIST")
 
+    def test_extract_audio_segments_starts_ffmpeg_once_for_continuous_hls(self):
+        from dedao_sync.transcriber import extract_audio_segments
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = TranscriptionConfig(True, "s3ai", True, root, free_tier_confirmed=True)
+            candidate = MediaCandidate("https://cdn.example/live.m3u8", "application/x-mpegURL", "m3u8")
+            manifest = "#EXTM3U\n" + "#EXTINF:300,\npart.ts\n" * 2
+
+            def run_ffmpeg(command, **kwargs):
+                pattern = Path(command[-1])
+                for index in (1, 2):
+                    target = pattern.with_name(pattern.name.replace("%03d", f"{index:03d}"))
+                    target.write_bytes(b"audio")
+                return mock.Mock()
+
+            with mock.patch("shutil.which", return_value="/usr/bin/ffmpeg"):
+                with mock.patch("subprocess.run", side_effect=run_ffmpeg) as run:
+                    segments = extract_audio_segments(
+                        candidate,
+                        config,
+                        free_space_bytes=10_000_000_000,
+                        manifest_text=manifest,
+                    )
+
+            self.assertEqual(run.call_count, 1)
+            command = run.call_args.args[0]
+            self.assertIn("-f", command)
+            self.assertEqual(command[command.index("-f") + 1], "segment")
+            self.assertIn("-segment_time", command)
+            self.assertEqual([path.name for path in segments], ["audio-001.mp3", "audio-002.mp3"])
+            cleanup_audio_segments(segments)
+
+    def test_extract_audio_segments_cleans_work_dir_when_ffmpeg_fails(self):
+        from dedao_sync.transcriber import extract_audio_segments
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = TranscriptionConfig(True, "s3ai", True, root, free_tier_confirmed=True)
+            candidate = MediaCandidate("https://cdn.example/live.m3u8", "application/x-mpegURL", "m3u8")
+            manifest = "#EXTM3U\n#EXTINF:30,\npart.ts\n"
+            with mock.patch("shutil.which", return_value="/usr/bin/ffmpeg"):
+                with mock.patch("subprocess.run", side_effect=OSError("ffmpeg failed")):
+                    with self.assertRaisesRegex(TranscriptionError, "audio extraction failed"):
+                        extract_audio_segments(
+                            candidate,
+                            config,
+                            free_space_bytes=10_000_000_000,
+                            manifest_text=manifest,
+                        )
+            self.assertEqual(list(root.glob("dedao-asr-*")), [])
+
     def test_segments_are_transcribed_in_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             first = Path(tmp) / "1.mp3"

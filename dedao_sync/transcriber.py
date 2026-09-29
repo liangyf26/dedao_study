@@ -277,41 +277,46 @@ def extract_audio_segments(
         shutil.rmtree(work_dir, ignore_errors=True)
         raise
 
-    segments: list[Path] = []
     count = (int(duration) + AUDIO_SEGMENT_SECONDS - 1) // AUDIO_SEGMENT_SECONDS
     if count > config.max_segments:
         shutil.rmtree(work_dir, ignore_errors=True)
         raise TranscriptionError(f"media requires {count} segments; configured limit is {config.max_segments}")
+    output_pattern = work_dir / "audio-%03d.mp3"
     try:
-        for index in range(count):
-            start = index * AUDIO_SEGMENT_SECONDS
-            segment_duration = min(AUDIO_SEGMENT_SECONDS, duration - start)
-            target = work_dir / f"audio-{index + 1:03d}.mp3"
-            subprocess.run(
-                [
-                    ffmpeg_path,
-                    "-nostdin",
-                    "-v", "error",
-                    "-protocol_whitelist", "http,https,tcp,tls",
-                    "-ss", str(start),
-                    "-i", candidate.url,
-                    "-t", str(segment_duration),
-                    "-vn",
-                    "-ac", str(AUDIO_CHANNELS),
-                    "-ar", str(AUDIO_SAMPLE_RATE),
-                    "-b:a", "48k",
-                    "-y", str(target),
-                ],
-                check=True,
-                capture_output=True,
-                timeout=config.request_timeout_seconds,
-            )
-            if not target.is_file() or target.stat().st_size == 0:
+        subprocess.run(
+            [
+                ffmpeg_path,
+                "-nostdin",
+                "-v", "error",
+                "-protocol_whitelist", "http,https,tcp,tls",
+                "-i", candidate.url,
+                "-vn",
+                "-ac", str(AUDIO_CHANNELS),
+                "-ar", str(AUDIO_SAMPLE_RATE),
+                "-b:a", "48k",
+                "-f", "segment",
+                "-segment_time", str(AUDIO_SEGMENT_SECONDS),
+                "-segment_format", "mp3",
+                "-reset_timestamps", "1",
+                "-y", str(output_pattern),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=max(config.request_timeout_seconds, int(duration) + 60),
+        )
+        segments = sorted(work_dir.glob("audio-*.mp3"))
+        if not segments:
+            raise TranscriptionError("ffmpeg produced no audio segments")
+        if len(segments) > config.max_segments:
+            raise TranscriptionError(f"ffmpeg produced {len(segments)} segments; configured limit is {config.max_segments}")
+        total_audio_bytes = 0
+        for segment in segments:
+            size = segment.stat().st_size
+            if size <= 0:
                 raise TranscriptionError("ffmpeg produced an empty audio segment")
-            total_audio_bytes = sum(segment.stat().st_size for segment in segments) + target.stat().st_size
-            if total_audio_bytes > config.max_audio_bytes:
-                raise TranscriptionError("audio segments exceed configured total size limit")
-            segments.append(target)
+            total_audio_bytes += size
+        if total_audio_bytes > config.max_audio_bytes:
+            raise TranscriptionError("audio segments exceed configured total size limit")
         return segments
     except Exception as exc:
         shutil.rmtree(work_dir, ignore_errors=True)
