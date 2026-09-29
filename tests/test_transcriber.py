@@ -69,6 +69,7 @@ class TranscriberTests(unittest.TestCase):
             self.assertIn("-f", command)
             self.assertEqual(command[command.index("-f") + 1], "segment")
             self.assertIn("-segment_time", command)
+            self.assertEqual(command[command.index("-segment_time") + 1], "600")
             self.assertEqual([path.name for path in segments], ["audio-001.mp3", "audio-002.mp3"])
             cleanup_audio_segments(segments)
 

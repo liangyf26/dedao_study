@@ -27,7 +27,7 @@ LOGGER = logging.getLogger(__name__)
 
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
-AUDIO_SEGMENT_SECONDS = 300
+AUDIO_SEGMENT_SECONDS = 600
 
 
 class TranscriptionError(RuntimeError):
