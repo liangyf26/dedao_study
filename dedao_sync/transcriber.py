@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import mimetypes
@@ -9,7 +10,9 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -54,6 +57,9 @@ class S3AITranscriptionService(TranscriptionService):
     def __init__(self, config: TranscriptionConfig):
         self.config = config
         self.selected_model: str | None = None
+        self._failure_counts: dict[str, int] = {}
+        self._circuit_open: set[str] = set()
+        self._state_lock = threading.Lock()
 
     @property
     def provider(self) -> str:
@@ -75,9 +81,15 @@ class S3AITranscriptionService(TranscriptionService):
 
         last_error: Exception | None = None
         for model in self.config.models:
+            with self._state_lock:
+                if model in self._circuit_open:
+                    LOGGER.warning("S3AI ASR model circuit open model=%s", model)
+                    continue
             for attempt in range(self.config.model_retries + 1):
                 try:
                     text = self._request(base_url, api_key, model, media_path)
+                    with self._state_lock:
+                        self._failure_counts[model] = 0
                     self.selected_model = model
                     return clean_transcript(text)
                 except _FatalASRError:
@@ -89,7 +101,14 @@ class S3AITranscriptionService(TranscriptionService):
                     if attempt < self.config.model_retries:
                         time.sleep(min(2 ** attempt, 8))
                         continue
-                    LOGGER.warning("S3AI ASR model failed model=%s error=%s", model, redact(exc))
+                    with self._state_lock:
+                        failures = self._failure_counts.get(model, 0) + 1
+                        self._failure_counts[model] = failures
+                        if failures >= self.config.model_circuit_breaker_threshold:
+                            self._circuit_open.add(model)
+                            LOGGER.warning("S3AI ASR model circuit opened model=%s failures=%d", model, failures)
+                        else:
+                            LOGGER.warning("S3AI ASR model failed model=%s failures=%d error=%s", model, failures, redact(exc))
                     break
         raise TranscriptionError(f"all S3AI ASR models failed: {redact(last_error)}")
 
@@ -327,16 +346,59 @@ def extract_audio_segments(
         raise
 
 
-def transcribe_segments(service: TranscriptionService, segments: list[Path]) -> str:
+def transcribe_segments(
+    service: TranscriptionService,
+    segments: list[Path],
+    *,
+    concurrency: int = 1,
+    checkpoint_dir: Path | None = None,
+) -> str:
     if not segments:
         raise TranscriptionError("no audio segments to transcribe")
-    texts: list[str] = []
-    for segment in segments:
+    if concurrency not in {1, 2}:
+        raise TranscriptionError("ASR concurrency must be 1 or 2")
+
+    def load_checkpoint(index: int, segment: Path) -> str | None:
+        if checkpoint_dir is None:
+            return None
+        path = checkpoint_dir / f"segment-{index:03d}.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if payload.get("segment") != segment.name or not isinstance(payload.get("text"), str):
+            return None
+        return payload["text"]
+
+    def transcribe_one(item: tuple[int, Path]) -> tuple[int, str]:
+        index, segment = item
+        cached = load_checkpoint(index, segment)
+        if cached is not None:
+            return index, cached
         text = service.transcribe(segment).strip()
         if not text:
-            raise TranscriptionError("ASR returned an empty transcript segment")
-        texts.append(text)
-    return "\n\n".join(texts)
+            raise TranscriptionError(f"ASR returned an empty transcript segment: {segment.name}")
+        return index, text
+
+    items = list(enumerate(segments, start=1))
+    if checkpoint_dir is not None:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    results: dict[int, str] = {}
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = [executor.submit(transcribe_one, item) for item in items]
+        for future in futures:
+            index, text = future.result()
+            results[index] = text
+            if checkpoint_dir is not None:
+                checkpoint_path = checkpoint_dir / f"segment-{index:03d}.json"
+                checkpoint_path.write_text(
+                    json.dumps(
+                        {"segment": segments[index - 1].name, "text": text, "provider": str(getattr(service, "provider", ""))},
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+    return "\n\n".join(results[index] for index in range(1, len(segments) + 1))
 
 
 def transcribe_detail_media(
@@ -357,10 +419,23 @@ def transcribe_detail_media(
         raise TranscriptionError("no supported HLS media candidate is available")
     service = service or create_transcription_service(config)
     segments = extract_audio_segments(candidate, config)
+    checkpoint_dir = None
+    if config.checkpoint_enabled:
+        checkpoint_key = hashlib.sha256(candidate.url.encode("utf-8")).hexdigest()[:16]
+        checkpoint_dir = config.temp_dir / f"checkpoint-{checkpoint_key}"
+    succeeded = False
     try:
-        transcript = transcribe_segments(service, segments)
+        transcript = transcribe_segments(
+            service,
+            segments,
+            concurrency=config.asr_concurrency,
+            checkpoint_dir=checkpoint_dir,
+        )
+        succeeded = True
     finally:
         cleanup_audio_segments(segments)
+        if succeeded and checkpoint_dir is not None:
+            shutil.rmtree(checkpoint_dir, ignore_errors=True)
     provider = getattr(service, "provider", config.provider)
     return TranscriptionResult(text=transcript, provider=provider)
 

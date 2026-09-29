@@ -58,6 +58,9 @@ transcription:
     - "FunAudioLLM/SenseVoiceSmall"
     - "TeleAI/TeleSpeechASR"
   model_retries: 1
+  asr_concurrency: 2
+  checkpoint_enabled: true
+  model_circuit_breaker_threshold: 2
   delete_media_after_transcription: true
   temp_dir: "data/media_cache"
   max_duration_seconds: 14400

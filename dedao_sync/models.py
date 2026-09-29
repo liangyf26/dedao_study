@@ -76,6 +76,9 @@ class TranscriptionConfig:
         "TeleAI/TeleSpeechASR",
     )
     model_retries: int = 1
+    asr_concurrency: int = 2
+    checkpoint_enabled: bool = True
+    model_circuit_breaker_threshold: int = 2
     max_duration_seconds: int = 14400
     max_audio_bytes: int = 100_000_000
     request_timeout_seconds: int = 120

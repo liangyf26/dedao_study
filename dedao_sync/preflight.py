@@ -237,6 +237,10 @@ class PreflightChecker:
                 result.add_error("Transcription model list must not be empty")
             if transcription.model_retries < 0:
                 result.add_error("transcription.model_retries must be non-negative")
+            if transcription.asr_concurrency not in {1, 2}:
+                result.add_error("transcription.asr_concurrency must be 1 or 2")
+            if transcription.model_circuit_breaker_threshold <= 0:
+                result.add_error("transcription.model_circuit_breaker_threshold must be positive")
             if not os.environ.get(transcription.api_key_env):
                 result.add_error(f"Transcription API key env is missing: {transcription.api_key_env}")
             endpoint = os.environ.get(transcription.endpoint_env, "")

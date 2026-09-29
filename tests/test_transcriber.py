@@ -91,6 +91,51 @@ class TranscriberTests(unittest.TestCase):
                         )
             self.assertEqual(list(root.glob("dedao-asr-*")), [])
 
+    def test_transcribe_segments_runs_two_workers_and_preserves_order(self):
+        from dedao_sync.transcriber import transcribe_segments
+        import time
+
+        with tempfile.TemporaryDirectory() as tmp:
+            segments = []
+            for index in range(4):
+                path = Path(tmp) / f"audio-{index:03d}.mp3"
+                path.touch()
+                segments.append(path)
+            active = 0
+            maximum = 0
+            lock = __import__("threading").Lock()
+
+            class ConcurrentStub:
+                def transcribe(self, path):
+                    nonlocal active, maximum
+                    with lock:
+                        active += 1
+                        maximum = max(maximum, active)
+                    time.sleep(0.01)
+                    with lock:
+                        active -= 1
+                    return path.stem
+
+            text = transcribe_segments(ConcurrentStub(), segments, concurrency=2)
+            self.assertEqual(text, "audio-000\n\naudio-001\n\naudio-002\n\naudio-003")
+            self.assertEqual(maximum, 2)
+
+    def test_transcribe_segments_uses_checkpoint_without_calling_service(self):
+        from dedao_sync.transcriber import transcribe_segments
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            segment = root / "audio-001.mp3"
+            segment.touch()
+            checkpoint = root / "checkpoint"
+            checkpoint.mkdir()
+            (checkpoint / "segment-001.json").write_text(
+                '{"segment":"audio-001.mp3","text":"缓存文本","provider":"s3ai/model"}',
+                encoding="utf-8",
+            )
+            service = mock.Mock()
+            self.assertEqual(transcribe_segments(service, [segment], checkpoint_dir=checkpoint), "缓存文本")
+            service.transcribe.assert_not_called()
+
     def test_segments_are_transcribed_in_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             first = Path(tmp) / "1.mp3"
@@ -115,6 +160,25 @@ class TranscriberTests(unittest.TestCase):
             segment.touch()
             cleanup_audio_segments([segment])
             self.assertFalse(work.exists())
+
+    def test_s3ai_model_circuit_breaker_skips_repeated_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "part.mp3"
+            audio.touch()
+            config = TranscriptionConfig(True, "s3ai", True, Path(tmp), free_tier_confirmed=True, model_retries=0, model_circuit_breaker_threshold=2)
+            service = S3AITranscriptionService(config)
+            calls = []
+            def fail_first(base, key, model, path):
+                calls.append(model)
+                raise __import__("dedao_sync.transcriber", fromlist=["_TransientASRError"])._TransientASRError("timeout")
+            with mock.patch.dict(os.environ, {config.api_key_env: "test", config.endpoint_env: "https://asr.example/api"}):
+                with mock.patch.object(service, "_request", side_effect=fail_first):
+                    with mock.patch("dedao_sync.transcriber.LOGGER.warning"):
+                        for _ in range(2):
+                            with self.assertRaises(TranscriptionError): service.transcribe(audio)
+                        self.assertEqual(calls.count(config.models[0]), 2)
+                        with self.assertRaises(TranscriptionError): service.transcribe(audio)
+                        self.assertEqual(calls.count(config.models[0]), 2)
 
     def test_s3ai_adapter_blocks_unconfirmed_costs(self):
         with tempfile.TemporaryDirectory() as tmp:

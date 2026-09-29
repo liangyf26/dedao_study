@@ -242,6 +242,14 @@ def load_config(path: str | Path = "config.yaml", *, root_dir: str | Path | None
             endpoint_env=str(transcription.get("endpoint_env", "S3AI_BASE_URL")),
             models=_transcription_models(transcription.get("models")),
             model_retries=int(transcription.get("model_retries", 1)),
+            asr_concurrency=int(transcription.get("asr_concurrency", 2)),
+            checkpoint_enabled=_bool(
+                transcription.get("checkpoint_enabled", True),
+                "transcription.checkpoint_enabled",
+            ),
+            model_circuit_breaker_threshold=int(
+                transcription.get("model_circuit_breaker_threshold", 2)
+            ),
             max_duration_seconds=int(transcription.get("max_duration_seconds", 14400)),
             max_audio_bytes=int(transcription.get("max_audio_bytes", 100_000_000)),
             request_timeout_seconds=int(transcription.get("request_timeout_seconds", 120)),
