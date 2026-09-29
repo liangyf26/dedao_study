@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -13,6 +14,9 @@ from uuid import uuid4
 
 from .models import ContentDetail, SummaryConfig, SummaryResult
 from .security import redact
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SummaryError(RuntimeError):
@@ -32,7 +36,56 @@ SUMMARY_COMPACT_MAX_TOKENS = 900
 COMPACT_TRANSCRIPT_CHARS = 8000
 SUMMARY_ULTRA_COMPACT_MAX_TOKENS = 500
 ULTRA_COMPACT_TRANSCRIPT_CHARS = 2500
+LONG_TRANSCRIPT_CHUNK_CHARS = 12000
 SUMMARY_REQUEST_ATTEMPTS = 2
+
+
+def split_transcript(text: str, max_chars: int = LONG_TRANSCRIPT_CHUNK_CHARS) -> list[str]:
+    """Split a transcript near line/paragraph boundaries without dropping text."""
+    normalized = text.strip()
+    if not normalized:
+        return []
+    if max_chars <= 0:
+        raise ValueError("max_chars must be positive")
+    chunks: list[str] = []
+    remaining = normalized
+    while len(remaining) > max_chars:
+        boundary = remaining.rfind("\n", 0, max_chars + 1)
+        if boundary < max_chars // 2:
+            boundary = remaining.rfind(" ", 0, max_chars + 1)
+        if boundary < max_chars // 2:
+            boundary = max_chars
+        chunk = remaining[:boundary].strip()
+        if not chunk:
+            boundary = max_chars
+            chunk = remaining[:boundary].strip()
+        chunks.append(chunk)
+        remaining = remaining[boundary:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+def render_partial_summaries(summaries: list[SummaryResult]) -> str:
+    """Render chunk summaries as compact source material for the final merge pass."""
+    sections: list[str] = []
+    for index, summary in enumerate(summaries, start=1):
+        sections.append(f"第{index}部分：")
+        if summary.atomic_cards:
+            sections.append("原子卡片：" + "；".join(summary.atomic_cards))
+        if summary.permanent_note:
+            sections.append("永久笔记：" + summary.permanent_note)
+        if summary.links:
+            sections.append("关联：" + "；".join(summary.links))
+        if summary.actions:
+            sections.append("行动/观察：" + "；".join(summary.actions))
+        if summary.questions:
+            sections.append("复习问题：" + "；".join(summary.questions))
+        if summary.keywords:
+            sections.append("关键词：" + "、".join(summary.keywords))
+        sections.append("")
+    return "\n".join(sections).strip()
+
 SUMMARY_TRANSIENT_ERROR_PATTERNS = (
     "sslv3_alert_bad_record_mac",
     "bad record mac",
@@ -55,19 +108,36 @@ class OpenAICompatibleSummaryService(SummaryService):
         self.timeout_seconds = timeout_seconds
 
     def summarize(self, detail: ContentDetail) -> SummaryResult:
+        if len(detail.transcript_text) <= LONG_TRANSCRIPT_CHUNK_CHARS:
+            return self._summarize_single(detail)
+
+        chunks = split_transcript(detail.transcript_text, LONG_TRANSCRIPT_CHUNK_CHARS)
+        partial_summaries: list[SummaryResult] = []
+        for index, chunk in enumerate(chunks, start=1):
+            chunk_detail = replace(detail, transcript_text=chunk)
+            LOGGER.info("summarizing transcript chunk %d/%d chars=%d", index, len(chunks), len(chunk))
+            partial_summaries.append(self._summarize_single(chunk_detail))
+
+        merged_text = render_partial_summaries(partial_summaries)
+        merged_detail = replace(detail, transcript_text=merged_text)
+        LOGGER.info("merging %d transcript chunk summaries chars=%d", len(chunks), len(merged_text))
+        return self._summarize_single(merged_detail, prompt_builder=build_merge_summary_prompt)
+
+    def _summarize_single(self, detail: ContentDetail, *, prompt_builder=None) -> SummaryResult:
         base_url = os.environ.get(self.config.base_url_env, "").rstrip("/")
         api_key = os.environ.get(self.config.api_key_env, "")
         if not base_url or not api_key:
             raise SummaryError("summary API env is not configured")
         endpoint = chat_completions_url(base_url)
         session_id = str(uuid4())
+        prompt_builder = prompt_builder or build_summary_prompt
         try:
             return self._summarize_with_prompt(
                 detail,
                 endpoint,
                 api_key,
                 base_url,
-                build_summary_prompt(detail),
+                prompt_builder(detail),
                 session_id=session_id,
                 max_tokens=SUMMARY_MAX_TOKENS,
             )
@@ -232,6 +302,35 @@ def is_compact_retryable_summary_error(exc: SummaryError) -> bool:
             "bad record mac",
         )
     )
+
+
+def build_merge_summary_prompt(detail: ContentDetail) -> str:
+    item = detail.item
+    return f"""请把下面各部分的阶段性摘要合并成一份完整的得到直播学习笔记。
+
+要求：
+1. 下方内容是阶段性摘要，不是逐字原文；只合并其中明确出现的信息，不要补写。
+2. 去掉重复观点，保留跨部分反复出现或彼此关联的核心线索。
+3. 只输出 JSON，不要 Markdown，不要解释。
+4. atomic_cards 最多 8 条，每条不超过 80 字；permanent_note 不超过 350 字；其他数组最多 6 条。
+5. 涉及医学、政策、金融、法律时，只归纳原文观点，不给专业建议。
+
+JSON schema：
+{{
+  "atomic_cards": ["每条是一张可复用的原子卡片"],
+  "permanent_note": "一段长期保存的永久笔记",
+  "links": ["可关联主题或已有知识"],
+  "actions": ["可行动建议或后续观察信号"],
+  "questions": ["复习问题"],
+  "keywords": ["关键词"]
+}}
+
+栏目：{item.column_name}
+标题：{item.title}
+
+阶段性摘要：
+{detail.transcript_text}
+"""
 
 
 def build_summary_prompt(detail: ContentDetail) -> str:

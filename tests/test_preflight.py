@@ -289,6 +289,59 @@ class PreflightTests(unittest.TestCase):
             self.assertIn("Unsupported summary provider", text)
             self.assertIn("filename_pattern missing fields", text)
 
+    def test_live_column_and_backfill_date_are_valid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = load_config(
+                write_config(
+                    root,
+                    overrides={
+                        "dedao": {
+                            "columns": [{
+                                "name": "得到直播",
+                                "url": "https://www.dedao.cn/live/home",
+                                "kind": "live",
+                                "backfill_since": "2026-09-01",
+                                "enabled": True,
+                            }],
+                        },
+                    },
+                )
+            )
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+            result = PreflightChecker(config).check()
+            self.assertTrue(result.ok, result.errors)
+
+    def test_live_column_rejects_invalid_backfill_date_and_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = load_config(
+                write_config(
+                    root,
+                    overrides={
+                        "dedao": {
+                            "columns": [{
+                                "name": "错误直播",
+                                "url": "https://www.dedao.cn/course/detail?id=1",
+                                "kind": "live",
+                                "backfill_since": "2026-99-01",
+                                "enabled": True,
+                            }],
+                        },
+                    },
+                )
+            )
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+            result = PreflightChecker(config).check()
+            self.assertFalse(result.ok)
+            text = "\n".join(result.errors)
+            self.assertIn("Live column URL must point to /live/", text)
+            self.assertIn("Invalid backfill_since", text)
+
     def test_volcengine_summary_provider_is_supported(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

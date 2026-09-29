@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from string import Formatter
 from urllib.parse import urlparse
@@ -92,6 +93,15 @@ def check_config_semantics(config: AppConfig) -> PreflightResult:
         parsed = urlparse(column.url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             result.add_error(f"Invalid Dedao column URL for {column.name}: {column.url}")
+        if column.kind not in {"column", "live"}:
+            result.add_error(f"Unsupported Dedao column kind for {column.name}: {column.kind}")
+        if column.kind == "live" and "/live/" not in column.url.lower():
+            result.add_error(f"Live column URL must point to /live/: {column.name}")
+        if column.backfill_since:
+            try:
+                date.fromisoformat(column.backfill_since)
+            except ValueError:
+                result.add_error(f"Invalid backfill_since for {column.name}: {column.backfill_since}")
     for name in sorted(duplicate_names):
         result.add_error(f"Duplicate Dedao column name: {name}")
 

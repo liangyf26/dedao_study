@@ -32,6 +32,12 @@ dedao:
     - name: "得到精选"
       url: "https://www.dedao.cn/course/detail?id=b0rNAzaYOj7VyPMs09K8P54m6wlk12"
       enabled: true
+    - name: "得到直播"
+      url: "https://www.dedao.cn/live/home"
+      kind: "live"
+      # Only backfill replays on or after this date; omit to sync all available replays.
+      backfill_since: "2026-09-01"
+      enabled: true
 
 summary:
   enabled: true

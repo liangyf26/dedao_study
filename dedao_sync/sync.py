@@ -9,6 +9,7 @@ from .config import load_config
 from .crawler import CrawlerError, DedaoCrawler
 from .logging_utils import setup_logging
 from .locking import RunLock, RunLockError
+from .live import QUALITY_CAPTION_PENDING, LiveCrawler
 from .markdown import MarkdownWriter, content_hash, extract_transcript_from_note
 from .models import (
     ContentDetail,
@@ -18,6 +19,7 @@ from .models import (
     STATUS_LOGIN_REQUIRED,
     STATUS_LOCKED,
     STATUS_MISSING_TRANSCRIPT,
+    STATUS_PENDING_CAPTION,
     STATUS_POLICY_BLOCKED,
     STATUS_PREFLIGHT_FAILED,
     STATUS_SKIPPED,
@@ -62,7 +64,12 @@ def new_run_report(**kwargs) -> RunReport:
 
 
 def final_run_status(report: RunReport) -> str:
-    attention_count = report.failed_count + report.missing_transcript_count + report.summary_failed_count
+    attention_count = (
+        report.failed_count
+        + report.missing_transcript_count
+        + report.pending_caption_count
+        + report.summary_failed_count
+    )
     return "success" if attention_count == 0 else "partial_failed"
 
 
@@ -204,10 +211,14 @@ def run_sync(
         for warning in preflight.warnings:
             LOGGER.warning(warning)
 
+        crawler_was_injected = crawler is not None
         crawler = crawler or DedaoCrawler(config)
+        live_crawler = None if crawler_was_injected else (
+            LiveCrawler(config) if any(column.kind == "live" for column in enabled_columns) else None
+        )
         try:
             report.request_count += 1
-            if not crawler.check_login():
+            if not (live_crawler or crawler).check_login():
                 report.status = STATUS_LOGIN_REQUIRED
                 report.failed_count = 1
                 report.failures.append("登录态失效，请重新运行 dedao-sync login")
@@ -232,7 +243,10 @@ def run_sync(
             LOGGER.info("checking column: %s", column.name)
             try:
                 report.request_count += 1
-                crawl_result = crawler.list_items(column)
+                column_crawler = (
+                    live_crawler if column.kind == "live" and live_crawler is not None else crawler
+                )
+                crawl_result = column_crawler.list_items(column)
             except Exception as exc:
                 safe_error = redact(exc)
                 report.failed_count += 1
@@ -254,7 +268,8 @@ def run_sync(
             LOGGER.info("column discovered: %s items=%d", column.name, len(crawl_result.items))
             for index, item in enumerate(crawl_result.items, start=1):
                 existing = repo.find_existing(item)
-                if existing:
+                retry_pending_caption = bool(existing and existing["status"] == STATUS_PENDING_CAPTION)
+                if existing and not retry_pending_caption:
                     report.skipped_count += 1
                     repo.add_run_item(run_id, int(existing["id"]), "skip", STATUS_SKIPPED, "already synced")
                     LOGGER.info(
@@ -265,6 +280,14 @@ def run_sync(
                         item.title,
                     )
                     continue
+                if retry_pending_caption:
+                    LOGGER.info(
+                        "item %d/%d retrying pending caption: %s - %s",
+                        index,
+                        len(crawl_result.items),
+                        column.name,
+                        item.title,
+                    )
 
                 if limit is not None and processed_new_items >= limit:
                     limit_reached = True
@@ -280,7 +303,8 @@ def run_sync(
                     continue
 
                 try:
-                    detail = fetch_detail_with_retry(crawler, item, report)
+                    detail_crawler = live_crawler if column.kind == "live" and live_crawler is not None else crawler
+                    detail = fetch_detail_with_retry(detail_crawler, item, report)
                     synced_item = detail.item
                     if is_policy_blocked(detail):
                         failure_message = detail_failure_message(detail)
@@ -297,7 +321,10 @@ def run_sync(
                         LOGGER.warning("policy blocked: %s - %s: %s", synced_item.column_name, synced_item.title, failure_message)
                         continue
                     if not detail.has_transcript:
-                        status = STATUS_EXTRACTOR_FAILED if detail.quality_reason else STATUS_MISSING_TRANSCRIPT
+                        is_pending_caption = column.kind == "live" and detail.quality_reason == QUALITY_CAPTION_PENDING
+                        status = STATUS_PENDING_CAPTION if is_pending_caption else (
+                            STATUS_EXTRACTOR_FAILED if detail.quality_reason else STATUS_MISSING_TRANSCRIPT
+                        )
                         failure_message = detail_failure_message(detail)
                         item_id = repo.upsert_item(
                             synced_item,
@@ -306,15 +333,20 @@ def run_sync(
                             has_transcript=False,
                             error_message=failure_message,
                         )
-                        repo.add_run_item(run_id, item_id, "extract", status, failure_message)
-                        report.missing_transcript_count += 1
-                        add_report_item(report.missing_by_column, synced_item.column_name, synced_item.title, failure_message)
-                        LOGGER.warning("missing transcript: %s - %s: %s", synced_item.column_name, synced_item.title, failure_message)
+                        repo.add_run_item(run_id, item_id, "caption" if is_pending_caption else "extract", status, failure_message)
+                        if is_pending_caption:
+                            report.pending_caption_count += 1
+                            add_report_item(report.pending_caption_by_column, synced_item.column_name, synced_item.title, failure_message)
+                            LOGGER.info("caption pending: %s - %s: %s", synced_item.column_name, synced_item.title, failure_message)
+                        else:
+                            report.missing_transcript_count += 1
+                            add_report_item(report.missing_by_column, synced_item.column_name, synced_item.title, failure_message)
+                            LOGGER.warning("missing transcript: %s - %s: %s", synced_item.column_name, synced_item.title, failure_message)
                         continue
 
                     digest = content_hash(detail.transcript_text)
                     existing_by_hash = repo.find_existing(synced_item, digest)
-                    if existing_by_hash:
+                    if existing_by_hash and not (existing and int(existing_by_hash["id"]) == int(existing["id"])):
                         report.skipped_count += 1
                         repo.add_run_item(
                             run_id,
@@ -404,6 +436,7 @@ def run_retry_failed(
             STATUS_FAILED,
             STATUS_EXTRACTOR_FAILED,
             STATUS_MISSING_TRANSCRIPT,
+            STATUS_PENDING_CAPTION,
             STATUS_TRANSCRIPTION_FAILED,
         ),
         limit=limit,
@@ -431,10 +464,17 @@ def run_retry_failed(
             report.failures.extend(preflight.errors)
             return report, run_id
 
+        crawler_was_injected = crawler is not None
         crawler = crawler or DedaoCrawler(config)
+        live_crawler = None if crawler_was_injected else (
+            LiveCrawler(config) if any(column.kind == "live" for column in config.dedao.columns) else None
+        )
         try:
             report.request_count += 1
-            if not crawler.check_login():
+            login_crawler = crawler
+            if live_crawler is not None:
+                login_crawler = live_crawler
+            if not login_crawler.check_login():
                 report.status = STATUS_LOGIN_REQUIRED
                 report.failed_count = 1
                 report.failures.append("登录态失效，请重新运行 dedao-sync login")
@@ -493,7 +533,16 @@ def run_retry_failed(
                         report.added_by_column.setdefault(item.column_name, []).append(item.title)
                         continue
 
-                detail = fetch_detail_with_retry(crawler, item, report)
+                column_config = next(
+                    (column for column in config.dedao.columns if column.name == item.column_name),
+                    None,
+                )
+                detail_crawler = (
+                    live_crawler
+                    if live_crawler is not None and column_config is not None and column_config.kind == "live"
+                    else crawler
+                )
+                detail = fetch_detail_with_retry(detail_crawler, item, report)
                 synced_item = detail.item
                 if is_policy_blocked(detail):
                     failure_message = detail_failure_message(detail)
@@ -508,7 +557,14 @@ def run_retry_failed(
                     report.failures.append(redact(f"{synced_item.column_name}/{synced_item.title}: {failure_message}"))
                     continue
                 if not detail.has_transcript:
-                    status = STATUS_EXTRACTOR_FAILED if detail.quality_reason else STATUS_MISSING_TRANSCRIPT
+                    is_pending_caption = (
+                        column_config is not None
+                        and column_config.kind == "live"
+                        and detail.quality_reason == QUALITY_CAPTION_PENDING
+                    )
+                    status = STATUS_PENDING_CAPTION if is_pending_caption else (
+                        STATUS_EXTRACTOR_FAILED if detail.quality_reason else STATUS_MISSING_TRANSCRIPT
+                    )
                     failure_message = detail_failure_message(detail)
                     repo.upsert_item(
                         synced_item,
@@ -516,9 +572,13 @@ def run_retry_failed(
                         content_hash=detail.raw_html_hash,
                         error_message=failure_message,
                     )
-                    repo.add_run_item(run_id, int(row["id"]), "retry", status, failure_message)
-                    report.missing_transcript_count += 1
-                    add_report_item(report.missing_by_column, synced_item.column_name, synced_item.title, failure_message)
+                    repo.add_run_item(run_id, int(row["id"]), "caption" if is_pending_caption else "retry", status, failure_message)
+                    if is_pending_caption:
+                        report.pending_caption_count += 1
+                        add_report_item(report.pending_caption_by_column, synced_item.column_name, synced_item.title, failure_message)
+                    else:
+                        report.missing_transcript_count += 1
+                        add_report_item(report.missing_by_column, synced_item.column_name, synced_item.title, failure_message)
                     continue
                 digest = content_hash(detail.transcript_text)
                 summary_status = "disabled"

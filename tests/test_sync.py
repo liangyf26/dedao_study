@@ -15,6 +15,7 @@ from dedao_sync.models import (
     MediaCandidate,
     SummaryResult,
     STATUS_MISSING_TRANSCRIPT,
+    STATUS_PENDING_CAPTION,
     STATUS_POLICY_BLOCKED,
     STATUS_EXTRACTOR_FAILED,
     STATUS_LOGIN_REQUIRED,
@@ -113,6 +114,51 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(report.status, "success")
             self.assertIsNotNone(run_id)
             self.assertTrue(any("feishu notification failed: network denied" in line for line in captured.output))
+            logging.shutdown()
+
+    def test_live_pending_caption_is_retried_and_written_to_year_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config_with_overrides(
+                root,
+                {
+                    "dedao": {
+                        "columns": [{
+                            "name": "得到直播",
+                            "url": "https://www.dedao.cn/live/home",
+                            "kind": "live",
+                            "backfill_since": "2026-09-01",
+                            "enabled": True,
+                        }],
+                    },
+                    "obsidian": {"year_subfolders": True},
+                },
+            )
+            auth = root / "data" / "auth" / "dedao_state.json"
+            auth.parent.mkdir(parents=True)
+            auth.write_text(VALID_AUTH_STATE, encoding="utf-8")
+            item = ContentItem(
+                "https://dedao.cn/replay/live-1",
+                "得到直播",
+                "直播标题",
+                "https://dedao.cn/replay/live-1",
+                dedao_id="live-1",
+                published_at="2026-09-21",
+                content_type="live_replay",
+            )
+            pending = PendingCaptionCrawler(item)
+            first, _ = run_sync(config_path, crawler=pending, summary_service=FakeSummary(), notifier=FakeNotifier())
+            self.assertEqual(first.status, "partial_failed")
+            self.assertEqual(first.pending_caption_count, 1)
+            self.assertEqual(SyncRepository(default_db_path(root)).list_items()[0]["status"], STATUS_PENDING_CAPTION)
+
+            ready = FakeCrawler([item], {"live-1": "直播标题\n\n第一段完整文字稿。\n\n第二段内容。"})
+            second, _ = run_sync(config_path, crawler=ready, summary_service=FakeSummary(), notifier=FakeNotifier())
+            self.assertEqual(second.status, "success")
+            self.assertEqual(second.success_count, 1)
+            note = next((root / "vault" / "得到" / "得到直播" / "2026").glob("*.md"))
+            self.assertIn("直播标题", note.read_text(encoding="utf-8"))
+            self.assertEqual(SyncRepository(default_db_path(root)).list_items()[0]["status"], STATUS_SYNCED)
             logging.shutdown()
 
     def test_sync_writes_note_records_db_and_skips_second_run(self):
@@ -833,6 +879,26 @@ class FakeCrawler:
         key = item.dedao_id or item.source_url
         text = self.transcripts[key]
         return ContentDetail(item=item, transcript_text=text, has_transcript=True, raw_html_hash=f"html-{key}")
+
+
+class PendingCaptionCrawler:
+    def __init__(self, item: ContentItem):
+        self.item = item
+
+    def check_login(self) -> bool:
+        return True
+
+    def list_items(self, column):
+        return CrawlResult(items=[self.item])
+
+    def fetch_detail(self, item: ContentItem) -> ContentDetail:
+        return ContentDetail(
+            item=item,
+            transcript_text="",
+            has_transcript=False,
+            raw_html_hash="html-pending",
+            quality_reason="caption_pending",
+        )
 
 
 class MissingTranscriptCrawler:

@@ -165,7 +165,7 @@ dedao:
 
 摘要服务会要求模型输出 JSON，程序再渲染为 Obsidian 中的卡片笔记结构。解析器也兼容模型偶发输出的 Markdown 章节，但稳定运行时应优先使用 JSON 输出。
 
-超长全文在 MVP 中只会发送前 30000 字给摘要模型。程序会要求模型在永久笔记中标注“基于截断原文”；如果模型遗漏，程序会本地补上该说明。
+超长全文会按约 12000 字切成多个分块，先分别生成阶段性摘要，再将阶段性摘要合并成最终笔记，避免只摘要直播开头。合并阶段只允许使用各分块已经明确出现的信息。
 
 ## 7. 同步流程
 
@@ -185,9 +185,9 @@ dedao:
 
 `check` 是手动检查命令，只访问栏目列表并统计新内容；它不会写 Markdown、不会把新条目写入去重库，也不会发送飞书通知。`sync --dry-run` 也不会写 Markdown 或发送飞书通知，适合在改配置、改栏目列表选择器后演练发现和去重流程。
 
-当前版本还没有真正接入转录引擎。请保持 `transcription.enabled: false`；如果改成 `true`，`preflight` 会失败，避免误以为无文字稿内容已经能自动转录。
+直播回放的 Phase 1 主路径使用得到详情接口提供的官方 SRT/VTT 字幕，不下载视频即可生成全文稿。配置直播栏目时使用 `kind: live`，并可用 `backfill_since: "2026-09-01"` 限制历史回填起点；当前示例会写入 `得到/得到直播/2026/`。官方字幕尚未生成或暂时下载失败的条目会记录为 `pending_caption`，后续运行 `sync` 或 `retry-failed` 会重新尝试。
 
-当某篇内容没有网页文字稿但页面里存在媒体候选时，失败记录和 `list --failed` / `list --run-id` 会显示 `media_candidates=<数量>` 以及最多前三种候选类型，作为后续转录排查线索。
+当前版本还没有接入“下载视频后自行 ASR”的转录引擎。请保持 `transcription.enabled: false`；如果改成 `true`，`preflight` 会失败。字幕缺失时仍会记录 HLS 媒体候选，失败记录和 `list --failed` / `list --run-id` 会显示 `media_candidates=<数量>` 以及最多前三种候选类型，作为 Phase 2 云端 ASR 兜底的排查线索。
 
 `doctor` 和 `preflight` 都会检查栏目配置和文件命名模板：至少一个栏目启用、栏目名不重复、栏目 URL 是 `http(s)`、请求间隔非负、`summary.provider` 是当前支持的 `opencode_go` 或 `volcengine`，`obsidian.output_dir` 必须是 vault 内部的相对路径，以及 `filename_pattern` 只使用并且必须包含 `{column}`、`{published_date}`、`{title}`。
 
@@ -207,7 +207,7 @@ dedao:
 .venv\Scripts\dedao-sync.exe retry-failed --config config.yaml
 ```
 
-`retry-failed` 会处理 `failed`、`extractor_failed`、`missing_transcript`、`summary_failed` 和 `transcription_failed`。如果 `summary_failed` 条目已有 `file_path` 且全文仍在原笔记中，命令会原地覆盖补摘要，不会创建第二份 Markdown。`policy_blocked` 只会出现在 `list --failed` 中，需人工判断，不会自动重试。
+`retry-failed` 会处理 `failed`、`extractor_failed`、`missing_transcript`、`pending_caption`、`summary_failed` 和 `transcription_failed`。直播条目的 `pending_caption` 会重新请求官方字幕；字幕成功后写入原栏目对应的年份目录。如果 `summary_failed` 条目已有 `file_path` 且全文仍在原笔记中，命令会原地覆盖补摘要，不会创建第二份 Markdown。`policy_blocked` 只会出现在 `list --failed` 中，需人工判断，不会自动重试。
 
 重跑摘要：
 

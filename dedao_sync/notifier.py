@@ -75,9 +75,16 @@ def format_run_report(report: RunReport, *, include_titles: bool = True) -> str:
         f"网页请求数：{report.request_count}",
         f"失败文章数：{report.failed_count}",
         f"无文字稿文章数：{report.missing_transcript_count}",
+        f"待官方字幕数：{report.pending_caption_count}",
         f"摘要失败数：{report.summary_failed_count}",
     ]
-    has_item_details = bool(report.added_by_column or report.missing_by_column or report.summary_failed_by_column or report.failures)
+    has_item_details = bool(
+        report.added_by_column
+        or report.missing_by_column
+        or report.pending_caption_by_column
+        or report.summary_failed_by_column
+        or report.failures
+    )
     if not include_titles and has_item_details:
         lines.extend(["", "明细：已按配置隐藏标题；请在本机用 list --runs / list --failed 查看。"])
     if include_titles and report.added_by_column:
@@ -86,6 +93,9 @@ def format_run_report(report: RunReport, *, include_titles: bool = True) -> str:
     if include_titles and report.missing_by_column:
         lines.extend(["", "无文字稿/待处理："])
         _append_bucket_lines(lines, report.missing_by_column)
+    if include_titles and report.pending_caption_by_column:
+        lines.extend(["", "等待官方字幕："])
+        _append_bucket_lines(lines, report.pending_caption_by_column)
     if include_titles and report.summary_failed_by_column:
         lines.extend(["", "摘要失败："])
         _append_bucket_lines(lines, report.summary_failed_by_column)

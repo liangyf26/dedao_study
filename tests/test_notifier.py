@@ -79,6 +79,7 @@ class NotifierTests(unittest.TestCase):
             request_count=9,
             failed_count=1,
             missing_transcript_count=1,
+            pending_caption_count=2,
             summary_failed_count=1,
             failures=["Authorization: Bearer abc.def"],
             metadata={"host": "test-host"},
@@ -94,6 +95,7 @@ class NotifierTests(unittest.TestCase):
         self.assertIn("网页请求数：9", text)
         self.assertIn("失败文章数：1", text)
         self.assertIn("无文字稿文章数：1", text)
+        self.assertIn("待官方字幕数：2", text)
         self.assertIn("摘要失败数：1", text)
         self.assertNotIn("abc.def", text)
 

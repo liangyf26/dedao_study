@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from .models import ContentItem, RunReport, STATUS_SUMMARY_FAILED, STATUS_SYNCED
+from .models import ContentItem, RunReport, STATUS_PENDING_CAPTION, STATUS_SUMMARY_FAILED, STATUS_SYNCED
 from .security import redact
 from .time_utils import now_local
 
@@ -57,6 +57,7 @@ RUN_COLUMNS = {
     "failed_count": "INTEGER NOT NULL DEFAULT 0",
     "missing_transcript_count": "INTEGER NOT NULL DEFAULT 0",
     "summary_failed_count": "INTEGER NOT NULL DEFAULT 0",
+    "pending_caption_count": "INTEGER NOT NULL DEFAULT 0",
     "log_path": "TEXT",
     "error_message": "TEXT",
 }
@@ -135,6 +136,7 @@ class SyncRepository:
                   failed_count INTEGER NOT NULL DEFAULT 0,
                   missing_transcript_count INTEGER NOT NULL DEFAULT 0,
                   summary_failed_count INTEGER NOT NULL DEFAULT 0,
+                  pending_caption_count INTEGER NOT NULL DEFAULT 0,
                   log_path TEXT,
                   error_message TEXT
                 );
@@ -200,7 +202,7 @@ class SyncRepository:
                 UPDATE runs
                 SET finished_at = ?, status = ?, discovered_count = ?, new_count = ?,
                     skipped_count = ?, success_count = ?, request_count = ?, failed_count = ?,
-                    missing_transcript_count = ?, summary_failed_count = ?,
+                    missing_transcript_count = ?, summary_failed_count = ?, pending_caption_count = ?,
                     error_message = ?
                 WHERE id = ?
                 """,
@@ -215,6 +217,7 @@ class SyncRepository:
                     report.failed_count,
                     report.missing_transcript_count,
                     report.summary_failed_count,
+                    report.pending_caption_count,
                     safe_error,
                     run_id,
                 ),

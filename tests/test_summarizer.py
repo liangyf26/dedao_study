@@ -10,10 +10,12 @@ from dedao_sync.models import ContentDetail, ContentItem, SummaryResult
 from dedao_sync.summarizer import (
     OpenAICompatibleSummaryService,
     SummaryError,
+    build_merge_summary_prompt,
     build_summary_prompt,
     chat_completions_url,
     finalize_summary_result,
     parse_summary_text,
+    split_transcript,
 )
 
 
@@ -88,6 +90,20 @@ class SummarizerTests(unittest.TestCase):
         self.assertIn("只输出 JSON", prompt)
         self.assertIn("基于截断原文", prompt)
         self.assertLess(len(prompt), 22200)
+
+    def test_split_transcript_preserves_all_text(self):
+        text = "第一段内容\n\n第二段内容 " + ("长文本 " * 30)
+        chunks = split_transcript(text, max_chars=40)
+        self.assertGreater(len(chunks), 1)
+        normalize = lambda value: value.replace(" ", "").replace("\n", "")
+        self.assertEqual(normalize("".join(chunks)), normalize(text.strip()))
+
+    def test_merge_prompt_identifies_partial_summaries(self):
+        item = ContentItem("u", "得到直播", "长直播", "u")
+        detail = ContentDetail(item=item, transcript_text="第1部分：\n永久笔记：阶段摘要", has_transcript=True)
+        prompt = build_merge_summary_prompt(detail)
+        self.assertIn("阶段性摘要，不是逐字原文", prompt)
+        self.assertIn("长直播", prompt)
 
     def test_parse_repairable_truncated_json_cards(self):
         result = parse_summary_text(
@@ -200,6 +216,33 @@ class SummarizerTests(unittest.TestCase):
         self.assertIn("只输出 JSON", captured["payload"]["messages"][1]["content"])
         self.assertEqual(result.atomic_cards, ("卡片",))
         self.assertEqual(result.keywords, ("关键词",))
+
+    def test_long_transcript_uses_chunk_summaries_then_merge(self):
+        config = make_summary_config()
+        item = ContentItem("https://example.com/long", "得到直播", "长直播", "https://example.com/long")
+        detail = ContentDetail(
+            item=item,
+            transcript_text=("第一段内容。\n" * 1200) + ("第二段内容。\n" * 1200),
+            has_transcript=True,
+        )
+        prompts = []
+        response_payload = {
+            "choices": [{"message": {"content": json.dumps({"atomic_cards": ["卡片"], "permanent_note": "笔记", "keywords": ["关键词"]}, ensure_ascii=False)}}]
+        }
+
+        def fake_urlopen(request, timeout):
+            payload = json.loads(request.data.decode("utf-8"))
+            prompts.append(payload["messages"][1]["content"])
+            return FakeHttpResponse(response_payload)
+
+        with mock.patch.dict("os.environ", {"BASE": "https://api.example.com/v1", "KEY": "sk-test-secret"}, clear=False):
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen) as urlopen:
+                result = OpenAICompatibleSummaryService(config).summarize(detail)
+
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertEqual(len(prompts), 3)
+        self.assertIn("阶段性摘要，不是逐字原文", prompts[-1])
+        self.assertEqual(result.atomic_cards, ("卡片",))
 
     def test_chat_completions_url_accepts_full_endpoint(self):
         self.assertEqual(

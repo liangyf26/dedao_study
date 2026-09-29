@@ -17,6 +17,7 @@ from .models import (
     STATUS_EXTRACTOR_FAILED,
     STATUS_FAILED,
     STATUS_MISSING_TRANSCRIPT,
+    STATUS_PENDING_CAPTION,
     STATUS_POLICY_BLOCKED,
     STATUS_TRANSCRIPTION_FAILED,
 )
@@ -314,6 +315,7 @@ def cmd_list(args: argparse.Namespace) -> int:
                 STATUS_FAILED,
                 STATUS_EXTRACTOR_FAILED,
                 STATUS_MISSING_TRANSCRIPT,
+                STATUS_PENDING_CAPTION,
                 STATUS_POLICY_BLOCKED,
                 STATUS_TRANSCRIPTION_FAILED,
             ]

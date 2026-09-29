@@ -12,6 +12,7 @@ ItemStatus = str
 STATUS_DISCOVERED = "discovered"
 STATUS_SYNCED = "synced"
 STATUS_MISSING_TRANSCRIPT = "missing_transcript"
+STATUS_PENDING_CAPTION = "pending_caption"
 STATUS_SUMMARY_FAILED = "summary_failed"
 STATUS_TRANSCRIPTION_FAILED = "transcription_failed"
 STATUS_POLICY_BLOCKED = "policy_blocked"
@@ -28,6 +29,8 @@ class ColumnConfig:
     name: str
     url: str
     enabled: bool = True
+    kind: str = "column"
+    backfill_since: str | None = None
 
 
 @dataclass(frozen=True)
@@ -149,9 +152,11 @@ class RunReport:
     failed_count: int = 0
     missing_transcript_count: int = 0
     summary_failed_count: int = 0
+    pending_caption_count: int = 0
     log_path: Path | None = None
     added_by_column: dict[str, list[str]] = field(default_factory=dict)
     missing_by_column: dict[str, list[str]] = field(default_factory=dict)
+    pending_caption_by_column: dict[str, list[str]] = field(default_factory=dict)
     summary_failed_by_column: dict[str, list[str]] = field(default_factory=dict)
     failures: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
