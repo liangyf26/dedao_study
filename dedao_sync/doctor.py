@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -138,6 +139,23 @@ def run_doctor(config_path: str | Path = "config.yaml", *, require_auth: bool = 
             "installed" if _check_import("yaml") else "not installed; using built-in limited YAML parser",
         )
     )
+    if config.transcription.enabled:
+        checks.append(
+            DoctorCheck(
+                "transcription_free_entitlement",
+                "ok" if config.transcription.free_tier_confirmed else "error",
+                "explicitly confirmed" if config.transcription.free_tier_confirmed else "not confirmed; ASR is blocked",
+            )
+        )
+        for executable in ("ffmpeg", "ffprobe"):
+            checks.append(
+                DoctorCheck(
+                    f"dep:{executable}",
+                    "ok" if shutil.which(executable) else "error",
+                    "installed" if shutil.which(executable) else "missing",
+                )
+            )
+
     browser_ok, browser_message = check_playwright_chromium()
     checks.append(
         DoctorCheck(

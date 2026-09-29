@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass, field
 from datetime import date
@@ -108,6 +109,18 @@ def check_config_semantics(config: AppConfig) -> PreflightResult:
     if config.dedao.request_interval_seconds < 0:
         result.add_error("dedao.request_interval_seconds must be >= 0")
 
+    transcription = config.transcription
+    if transcription.max_duration_seconds <= 0:
+        result.add_error("transcription.max_duration_seconds must be positive")
+    if transcription.max_audio_bytes <= 0:
+        result.add_error("transcription.max_audio_bytes must be positive")
+    if transcription.max_segments <= 0:
+        result.add_error("transcription.max_segments must be positive")
+    if transcription.request_timeout_seconds <= 0:
+        result.add_error("transcription.request_timeout_seconds must be positive")
+    if transcription.min_free_disk_bytes < 0:
+        result.add_error("transcription.min_free_disk_bytes must be non-negative")
+
     if config.summary.enabled and config.summary.provider not in {"opencode_go", "volcengine"}:
         result.add_error(f"Unsupported summary provider: {config.summary.provider}")
 
@@ -213,7 +226,40 @@ class PreflightChecker:
                     result.add_warning(message)
 
         if self.config.transcription.enabled:
-            result.add_error("Transcription is not implemented in the current build; set transcription.enabled=false")
+            transcription = self.config.transcription
+            if transcription.provider != "volcengine":
+                result.add_error(f"Unsupported transcription provider: {transcription.provider}")
+            if not transcription.free_tier_confirmed:
+                result.add_error(
+                    "Transcription is fail-closed: explicitly confirm a free ASR entitlement before enabling it"
+                )
+            if not os.environ.get(transcription.api_key_env):
+                result.add_error(f"Transcription API key env is missing: {transcription.api_key_env}")
+            endpoint = os.environ.get(transcription.endpoint_env, "")
+            if not endpoint:
+                result.add_error(f"Transcription endpoint env is missing: {transcription.endpoint_env}")
+            elif not is_http_url(endpoint):
+                result.add_error(f"Transcription endpoint env is not a valid http(s) URL: {transcription.endpoint_env}")
+            result.add_error(
+                "Volcengine ASR direct-upload protocol is not verified; transcription remains unavailable and no ASR request will be sent"
+            )
+            if not shutil.which("ffmpeg"):
+                result.add_error("Transcription requires ffmpeg executable")
+            if not shutil.which("ffprobe"):
+                result.add_error("Transcription requires ffprobe executable")
+            try:
+                transcription.temp_dir.mkdir(parents=True, exist_ok=True)
+                if not transcription.temp_dir.is_dir():
+                    result.add_error(f"Transcription temp path is not a directory: {transcription.temp_dir}")
+                else:
+                    usage = shutil.disk_usage(transcription.temp_dir)
+                    if usage.free < transcription.min_free_disk_bytes:
+                        result.add_error("Transcription temp directory has insufficient free disk space")
+                    fd, temp_name = tempfile.mkstemp(prefix=".dedao-asr-preflight.", dir=transcription.temp_dir)
+                    os.close(fd)
+                    Path(temp_name).unlink(missing_ok=True)
+            except OSError as exc:
+                result.add_error(f"Transcription temp directory is not writable: {transcription.temp_dir} ({exc})")
         return result
 
     def _check_output_writable(self, result: PreflightResult) -> None:

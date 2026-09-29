@@ -47,10 +47,19 @@ summary:
   api_key_env: "OPENCODE_GO_API_KEY"
 
 transcription:
+  # Disabled by default. Enable only after confirming a free direct ASR entitlement.
   enabled: false
-  provider: "faster_whisper"
+  provider: "volcengine"
+  free_tier_confirmed: false
+  api_key_env: "VOLCENGINE_ASR_API_KEY"
+  endpoint_env: "VOLCENGINE_ASR_ENDPOINT"
   delete_media_after_transcription: true
   temp_dir: "data/media_cache"
+  max_duration_seconds: 14400
+  max_audio_bytes: 100000000
+  request_timeout_seconds: 120
+  max_segments: 24
+  min_free_disk_bytes: 1000000000
 
 feishu:
   enabled: true

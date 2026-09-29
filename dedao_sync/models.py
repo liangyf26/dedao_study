@@ -67,6 +67,14 @@ class TranscriptionConfig:
     provider: str
     delete_media_after_transcription: bool
     temp_dir: Path
+    free_tier_confirmed: bool = False
+    api_key_env: str = "VOLCENGINE_ASR_API_KEY"
+    endpoint_env: str = "VOLCENGINE_ASR_ENDPOINT"
+    max_duration_seconds: int = 14400
+    max_audio_bytes: int = 100_000_000
+    request_timeout_seconds: int = 120
+    max_segments: int = 24
+    min_free_disk_bytes: int = 1_000_000_000
 
 
 @dataclass(frozen=True)
@@ -120,6 +128,8 @@ class ContentDetail:
     quality_reason: str | None = None
     diagnostic_path: Path | None = None
     extracted_at: datetime | None = None
+    transcribed: bool = False
+    transcription_provider: str | None = None
 
 
 @dataclass(frozen=True)

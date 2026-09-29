@@ -101,7 +101,10 @@ def render_note(detail: ContentDetail, summary: SummaryResult, *, sync_time: dat
             "author": item.author or "",
             "published": item.published_at or "",
             "url": source_url,
-            "content_type": "transcript" if detail.has_transcript else "missing_transcript",
+            "content_type": "transcribed" if detail.transcribed else (
+                "transcript" if detail.has_transcript else "missing_transcript"
+            ),
+            "transcription_provider": detail.transcription_provider or "",
             "summary_style": "zettelkasten",
             "sync_time": sync_time.isoformat(timespec="seconds"),
         },
@@ -167,6 +170,7 @@ def render_note(detail: ContentDetail, summary: SummaryResult, *, sync_time: dat
             "",
             "## 全文稿",
             "",
+            "> 机器转写，可能存在识别错误。\n" if detail.transcribed else "",
             transcript,
             "",
         ]

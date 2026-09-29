@@ -204,12 +204,23 @@ def load_config(path: str | Path = "config.yaml", *, root_dir: str | Path | None
         ),
         transcription=TranscriptionConfig(
             enabled=_bool(transcription.get("enabled", False), "transcription.enabled"),
-            provider=str(transcription.get("provider", "faster_whisper")),
+            provider=str(transcription.get("provider", "volcengine")),
             delete_media_after_transcription=_bool(
                 transcription.get("delete_media_after_transcription", True),
                 "transcription.delete_media_after_transcription",
             ),
             temp_dir=_path(str(transcription.get("temp_dir", "data/media_cache")), root),
+            free_tier_confirmed=_bool(
+                transcription.get("free_tier_confirmed", False),
+                "transcription.free_tier_confirmed",
+            ),
+            api_key_env=str(transcription.get("api_key_env", "VOLCENGINE_ASR_API_KEY")),
+            endpoint_env=str(transcription.get("endpoint_env", "VOLCENGINE_ASR_ENDPOINT")),
+            max_duration_seconds=int(transcription.get("max_duration_seconds", 14400)),
+            max_audio_bytes=int(transcription.get("max_audio_bytes", 100_000_000)),
+            request_timeout_seconds=int(transcription.get("request_timeout_seconds", 120)),
+            max_segments=int(transcription.get("max_segments", 24)),
+            min_free_disk_bytes=int(transcription.get("min_free_disk_bytes", 1_000_000_000)),
         ),
         feishu=FeishuConfig(
             enabled=_bool(feishu.get("enabled", True), "feishu.enabled"),

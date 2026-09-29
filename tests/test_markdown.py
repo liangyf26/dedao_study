@@ -54,6 +54,23 @@ class MarkdownTests(unittest.TestCase):
         self.assertEqual(sanitize_filename_part('a<b>c:d"e/f\\g|h?i*j'), "a b c d e f g h i j")
         self.assertEqual(sanitize_filename_part("CON"), "_CON")
 
+    def test_render_marks_machine_transcription(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = make_config(root)
+            item = ContentItem("u", "得到直播", "机器转写", "u", published_at="2026-09-01")
+            detail = ContentDetail(
+                item=item,
+                transcript_text="机器转写正文",
+                has_transcript=True,
+                transcribed=True,
+                transcription_provider="volcengine",
+            )
+            body = render_note(detail, SummaryResult(atomic_cards=(), permanent_note=""))
+            self.assertIn('content_type: "transcribed"', body)
+            self.assertIn('transcription_provider: "volcengine"', body)
+            self.assertIn("机器转写，可能存在识别错误。", body)
+
     def test_render_and_atomic_write(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

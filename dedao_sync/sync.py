@@ -4,6 +4,7 @@ import logging
 import socket
 import time
 from pathlib import Path
+from dataclasses import replace
 
 from .config import load_config
 from .crawler import CrawlerError, DedaoCrawler
@@ -34,6 +35,10 @@ from .repository import row_to_content_item
 from .security import redact
 from .summarizer import DisabledSummaryService, SummaryError, create_summary_service
 from .time_utils import now_local
+from .transcriber import (
+    TranscriptionError,
+    transcribe_detail_media,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -71,6 +76,18 @@ def final_run_status(report: RunReport) -> str:
         + report.summary_failed_count
     )
     return "success" if attention_count == 0 else "partial_failed"
+
+
+def _transcribe_live_detail(detail: ContentDetail, config) -> ContentDetail:
+    result = transcribe_detail_media(detail.media_candidates, config)
+    return replace(
+        detail,
+        transcript_text=result.text,
+        has_transcript=True,
+        quality_reason=None,
+        transcribed=True,
+        transcription_provider=result.provider,
+    )
 
 
 def detail_failure_message(detail: ContentDetail) -> str | None:
@@ -306,6 +323,22 @@ def run_sync(
                     detail_crawler = live_crawler if column.kind == "live" and live_crawler is not None else crawler
                     detail = fetch_detail_with_retry(detail_crawler, item, report)
                     synced_item = detail.item
+                    if not detail.has_transcript and column.kind == "live" and config.transcription.enabled:
+                        try:
+                            detail = _transcribe_live_detail(detail, config.transcription)
+                        except TranscriptionError as exc:
+                            failure_message = redact(exc)
+                            item_id = repo.upsert_item(
+                                synced_item,
+                                status=STATUS_TRANSCRIPTION_FAILED,
+                                content_hash=detail.raw_html_hash,
+                                has_transcript=False,
+                                error_message=failure_message,
+                            )
+                            repo.add_run_item(run_id, item_id, "transcribe", STATUS_TRANSCRIPTION_FAILED, failure_message)
+                            report.failed_count += 1
+                            report.failures.append(redact(f"{synced_item.column_name}/{synced_item.title}: {failure_message}"))
+                            continue
                     if is_policy_blocked(detail):
                         failure_message = detail_failure_message(detail)
                         item_id = repo.upsert_item(
@@ -321,9 +354,12 @@ def run_sync(
                         LOGGER.warning("policy blocked: %s - %s: %s", synced_item.column_name, synced_item.title, failure_message)
                         continue
                     if not detail.has_transcript:
-                        is_pending_caption = column.kind == "live" and detail.quality_reason == QUALITY_CAPTION_PENDING
-                        status = STATUS_PENDING_CAPTION if is_pending_caption else (
-                            STATUS_EXTRACTOR_FAILED if detail.quality_reason else STATUS_MISSING_TRANSCRIPT
+                        is_transcription_failed = column.kind == "live" and config.transcription.enabled and detail.media_candidates
+                        is_pending_caption = column.kind == "live" and detail.quality_reason == QUALITY_CAPTION_PENDING and not is_transcription_failed
+                        status = STATUS_TRANSCRIPTION_FAILED if is_transcription_failed else (
+                            STATUS_PENDING_CAPTION if is_pending_caption else (
+                                STATUS_EXTRACTOR_FAILED if detail.quality_reason else STATUS_MISSING_TRANSCRIPT
+                            )
                         )
                         failure_message = detail_failure_message(detail)
                         item_id = repo.upsert_item(
@@ -334,7 +370,10 @@ def run_sync(
                             error_message=failure_message,
                         )
                         repo.add_run_item(run_id, item_id, "caption" if is_pending_caption else "extract", status, failure_message)
-                        if is_pending_caption:
+                        if is_transcription_failed:
+                            report.failed_count += 1
+                            report.failures.append(redact(f"{synced_item.column_name}/{synced_item.title}: {failure_message}"))
+                        elif is_pending_caption:
                             report.pending_caption_count += 1
                             add_report_item(report.pending_caption_by_column, synced_item.column_name, synced_item.title, failure_message)
                             LOGGER.info("caption pending: %s - %s: %s", synced_item.column_name, synced_item.title, failure_message)
@@ -384,6 +423,7 @@ def run_sync(
                         content_hash=digest,
                         file_path=path,
                         has_transcript=True,
+                        transcribed=detail.transcribed,
                         summary_status=summary_status,
                         error_message=summary_error,
                     )
@@ -526,6 +566,7 @@ def run_retry_failed(
                             content_hash=row["content_hash"],
                             file_path=path,
                             has_transcript=True,
+                            transcribed=bool(row["transcribed"] or 0),
                             summary_status=summary.status,
                         )
                         repo.add_run_item(run_id, item_id, "retry-summary", STATUS_SYNCED, str(path))
@@ -544,6 +585,21 @@ def run_retry_failed(
                 )
                 detail = fetch_detail_with_retry(detail_crawler, item, report)
                 synced_item = detail.item
+                if not detail.has_transcript and column_config is not None and column_config.kind == "live" and config.transcription.enabled:
+                    try:
+                        detail = _transcribe_live_detail(detail, config.transcription)
+                    except TranscriptionError as exc:
+                        failure_message = redact(exc)
+                        repo.upsert_item(
+                            synced_item,
+                            status=STATUS_TRANSCRIPTION_FAILED,
+                            content_hash=detail.raw_html_hash,
+                            error_message=failure_message,
+                        )
+                        repo.add_run_item(run_id, int(row["id"]), "transcribe", STATUS_TRANSCRIPTION_FAILED, failure_message)
+                        report.failed_count += 1
+                        report.failures.append(redact(f"{synced_item.column_name}/{synced_item.title}: {failure_message}"))
+                        continue
                 if is_policy_blocked(detail):
                     failure_message = detail_failure_message(detail)
                     repo.upsert_item(
@@ -603,6 +659,7 @@ def run_retry_failed(
                     content_hash=digest,
                     file_path=path,
                     has_transcript=True,
+                    transcribed=detail.transcribed,
                     summary_status=summary_status,
                     error_message=summary_error,
                 )
@@ -691,8 +748,10 @@ def run_resummarize(
                     status=STATUS_SYNCED,
                     content_hash=row["content_hash"],
                     file_path=path,
-                    has_transcript=True,
-                    summary_status=summary.status,
+                        has_transcript=True,
+                        transcribed=bool(row["transcribed"] or 0),
+                        summary_status=summary.status,
+
                 )
                 repo.add_run_item(run_id, item_id, "resummarize", STATUS_SYNCED, str(path))
                 report.success_count += 1

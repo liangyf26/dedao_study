@@ -27,6 +27,8 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(config.dedao.save_failure_html)
         self.assertEqual(config.dedao.failure_snapshot_dir, ROOT / "data" / "page_failures")
         self.assertFalse(config.transcription.enabled)
+        self.assertEqual(config.transcription.provider, "volcengine")
+        self.assertFalse(config.transcription.free_tier_confirmed)
         self.assertTrue(config.feishu.include_titles)
 
     def test_quoted_false_values_parse_as_false(self):

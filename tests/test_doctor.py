@@ -56,6 +56,26 @@ def write_config(root: Path, *, overrides: dict | None = None) -> Path:
 
 
 class DoctorTests(unittest.TestCase):
+    def test_doctor_blocks_unconfirmed_transcription(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = write_config(
+                root,
+                overrides={
+                    "transcription": {
+                        "enabled": True,
+                        "provider": "volcengine",
+                        "free_tier_confirmed": False,
+                        "api_key_env": "ASR_KEY",
+                        "endpoint_env": "ASR_ENDPOINT",
+                    }
+                },
+            )
+            checks = run_doctor(config_path, require_auth=False)
+            by_name = {check.name: check for check in checks}
+            self.assertEqual(by_name["transcription_free_entitlement"].status, "error")
+            self.assertEqual(doctor_exit_code(checks), 1)
+
     def test_doctor_reports_missing_auth_as_warning_when_not_required(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = write_config(Path(tmp))

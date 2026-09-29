@@ -75,6 +75,7 @@ def format_run_report(report: RunReport, *, include_titles: bool = True) -> str:
         f"网页请求数：{report.request_count}",
         f"失败文章数：{report.failed_count}",
         f"无文字稿文章数：{report.missing_transcript_count}",
+        f"转写失败数：{report.failed_count}",
         f"待官方字幕数：{report.pending_caption_count}",
         f"摘要失败数：{report.summary_failed_count}",
     ]

@@ -94,6 +94,7 @@ class NotifierTests(unittest.TestCase):
         self.assertIn("跳过文章数：6", text)
         self.assertIn("网页请求数：9", text)
         self.assertIn("失败文章数：1", text)
+        self.assertIn("转写失败数：1", text)
         self.assertIn("无文字稿文章数：1", text)
         self.assertIn("待官方字幕数：2", text)
         self.assertIn("摘要失败数：1", text)
