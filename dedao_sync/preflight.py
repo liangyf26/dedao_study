@@ -103,6 +103,13 @@ def check_config_semantics(config: AppConfig) -> PreflightResult:
                 date.fromisoformat(column.backfill_since)
             except ValueError:
                 result.add_error(f"Invalid backfill_since for {column.name}: {column.backfill_since}")
+        if column.backfill_until:
+            try:
+                date.fromisoformat(column.backfill_until)
+            except ValueError:
+                result.add_error(f"Invalid backfill_until for {column.name}: {column.backfill_until}")
+        if column.backfill_since and column.backfill_until and column.backfill_since > column.backfill_until:
+            result.add_error(f"backfill_since must not be after backfill_until for {column.name}")
     for name in sorted(duplicate_names):
         result.add_error(f"Duplicate Dedao column name: {name}")
 

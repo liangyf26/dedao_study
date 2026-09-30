@@ -31,6 +31,7 @@ class ColumnConfig:
     enabled: bool = True
     kind: str = "column"
     backfill_since: str | None = None
+    backfill_until: str | None = None
 
 
 @dataclass(frozen=True)

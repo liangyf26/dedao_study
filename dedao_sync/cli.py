@@ -128,7 +128,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
 
 def cmd_retry_failed(args: argparse.Namespace) -> int:
-    report, _ = run_retry_failed(args.config, limit=args.limit)
+    report, _ = run_retry_failed(args.config, limit=args.limit, column_name=args.column)
     print(f"retry status: {report.status}")
     for failure in report.failures:
         print(f"ERROR: {redact(failure)}", file=sys.stderr)
@@ -373,6 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
     retry_failed = sub.add_parser("retry-failed", help="Retry failed items")
     _add_config_arg(retry_failed)
     retry_failed.add_argument("--limit", type=int, default=20)
+    retry_failed.add_argument("--column", help="Limit retries to one column")
     retry_failed.set_defaults(func=cmd_retry_failed)
 
     resummarize = sub.add_parser("resummarize", help="Regenerate summaries")

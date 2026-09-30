@@ -197,6 +197,7 @@ def load_config(path: str | Path = "config.yaml", *, root_dir: str | Path | None
             enabled=_bool(item.get("enabled", True), "dedao.columns[].enabled"),
             kind=str(item.get("kind") or ("live" if "/live/" in str(item.get("url", "")) else "column")),
             backfill_since=(str(item["backfill_since"]).strip() or None) if item.get("backfill_since") else None,
+            backfill_until=(str(item["backfill_until"]).strip() or None) if item.get("backfill_until") else None,
         )
         for item in dedao.get("columns", [])
     )

@@ -108,6 +108,8 @@ def items_from_replay_entries(column: ColumnConfig, entries: list[dict]) -> list
         published_at = _format_publish_time(entry.get("starttime"))
         if column.backfill_since and published_at and published_at < column.backfill_since:
             continue
+        if column.backfill_until and published_at and published_at > column.backfill_until:
+            continue
         alias_id = str(entry.get("alias_id") or "").strip()
         detail_url = str(entry.get("share_url") or "").strip()
         if not detail_url and alias_id:
@@ -158,7 +160,11 @@ class LiveCrawler:
         return self._login_checker.check_login()
 
     def list_items(self, column: ColumnConfig) -> CrawlResult:
-        return self.list_replays(column, backfill_since=column.backfill_since)
+        return self.list_replays(
+            column,
+            backfill_since=column.backfill_since,
+            backfill_until=column.backfill_until,
+        )
 
     def fetch_detail(self, item: ContentItem) -> ContentDetail:
         return self.fetch_replay_detail(item)
@@ -196,7 +202,13 @@ class LiveCrawler:
             return 0
         return int(base * 1000)
 
-    def list_replays(self, column: ColumnConfig, *, backfill_since: str | None = None) -> CrawlResult:
+    def list_replays(
+        self,
+        column: ColumnConfig,
+        *,
+        backfill_since: str | None = None,
+        backfill_until: str | None = None,
+    ) -> CrawlResult:
         sync_playwright = self._sync_playwright()
         with sync_playwright() as playwright:
             browser, context = self._new_context(playwright)
@@ -204,7 +216,11 @@ class LiveCrawler:
                 page = context.new_page()
                 DedaoCrawler._goto_page(page, LIVE_HOME_URL, timeout=45000)
                 page.wait_for_timeout(4000)
-                entries = self._collect_replay_entries(page, backfill_since=backfill_since)
+                entries = self._collect_replay_entries(
+                    page,
+                    backfill_since=backfill_since,
+                    backfill_until=backfill_until,
+                )
                 items = items_from_replay_entries(column, entries)
                 diagnostic_path = None
                 if not items and self.config.dedao.save_failure_html:
@@ -214,7 +230,13 @@ class LiveCrawler:
                 self._close_context(browser, context)
                 time.sleep(self._request_delay_ms() / 1000)
 
-    def _collect_replay_entries(self, page, *, backfill_since: str | None) -> list[dict]:
+    def _collect_replay_entries(
+        self,
+        page,
+        *,
+        backfill_since: str | None,
+        backfill_until: str | None,
+    ) -> list[dict]:
         entries: list[dict] = []
         seen_room_ids: set[str] = set()
         for page_number in range(1, LIVE_LIST_MAX_PAGES + 1):
@@ -251,12 +273,19 @@ class LiveCrawler:
             )
             if backfill_since and oldest and oldest < backfill_since:
                 LOGGER.info(
-                    "live list pagination: page %d reached backfill cutoff (oldest=%s <= %s)",
+                    "live list pagination: page %d reached backfill cutoff (oldest=%s < %s)",
                     page_number,
                     oldest,
                     backfill_since,
                 )
                 break
+            if backfill_until and page_number == 1:
+                newest = max(
+                    (_format_publish_time(entry.get("starttime")) or "0000-00-00" for entry in page_entries),
+                    default=None,
+                )
+                if newest and newest < backfill_until:
+                    LOGGER.info("live list pagination: newest=%s before upper bound=%s", newest, backfill_until)
             if is_more != 1:
                 break
             page.wait_for_timeout(max(500, self._request_delay_ms()))

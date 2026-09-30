@@ -54,7 +54,22 @@ class LiveTests(unittest.TestCase):
         self.assertEqual([item.dedao_id for item in items], ["1"])
         self.assertEqual(items[0].content_type, "live_replay")
 
-    def test_build_detail_uses_vtt_when_caption_download_fails(self):
+    def test_items_filter_until_inclusive(self):
+        column = ColumnConfig(
+            name="得到直播",
+            url="https://www.dedao.cn/live/home",
+            kind="live",
+            backfill_since="2026-08-01",
+            backfill_until="2026-08-31",
+        )
+        entries = [
+            {"title": "八月初直播", "starttime": 1785542400, "share_url": "https://dedao.cn/replay/a", "room_id": "a"},
+            {"title": "八月底直播", "starttime": 1788134400, "share_url": "https://dedao.cn/replay/b", "room_id": "b"},
+            {"title": "九月初直播", "starttime": 1788220800, "share_url": "https://dedao.cn/replay/c", "room_id": "c"},
+        ]
+        items = items_from_replay_entries(column, entries)
+        self.assertEqual([item.dedao_id for item in items], ["a", "b"])
+
         crawler = LiveCrawler.__new__(LiveCrawler)
         item = ContentItem(
             source_url="https://dedao.cn/replay/1",
