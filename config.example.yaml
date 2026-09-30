@@ -37,6 +37,8 @@ dedao:
       kind: "live"
       # Only backfill replays on or after this date; omit to sync all available replays.
       backfill_since: "2026-09-01"
+      # Optional inclusive upper bound for one-off historical backfills.
+      # backfill_until: "2026-09-30"
       enabled: true
 
 summary:
@@ -63,10 +65,11 @@ transcription:
   model_circuit_breaker_threshold: 2
   delete_media_after_transcription: true
   temp_dir: "data/media_cache"
-  max_duration_seconds: 14400
+  max_duration_seconds: 21600
+  max_segment_audio_bytes: 8000000
   max_audio_bytes: 100000000
   request_timeout_seconds: 120
-  max_segments: 24
+  max_segments: 48
   min_free_disk_bytes: 1000000000
 
 feishu:

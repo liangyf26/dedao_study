@@ -251,10 +251,13 @@ def load_config(path: str | Path = "config.yaml", *, root_dir: str | Path | None
             model_circuit_breaker_threshold=int(
                 transcription.get("model_circuit_breaker_threshold", 2)
             ),
-            max_duration_seconds=int(transcription.get("max_duration_seconds", 14400)),
+            max_duration_seconds=int(transcription.get("max_duration_seconds", 21600)),
+            max_segment_audio_bytes=int(
+                transcription.get("max_segment_audio_bytes", transcription.get("max_audio_bytes", 8_000_000))
+            ),
             max_audio_bytes=int(transcription.get("max_audio_bytes", 100_000_000)),
             request_timeout_seconds=int(transcription.get("request_timeout_seconds", 120)),
-            max_segments=int(transcription.get("max_segments", 24)),
+            max_segments=int(transcription.get("max_segments", 48)),
             min_free_disk_bytes=int(transcription.get("min_free_disk_bytes", 1_000_000_000)),
         ),
         feishu=FeishuConfig(

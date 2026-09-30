@@ -79,7 +79,11 @@ def final_run_status(report: RunReport) -> str:
 
 
 def _transcribe_live_detail(detail: ContentDetail, config) -> ContentDetail:
-    result = transcribe_detail_media(detail.media_candidates, config)
+    result = transcribe_detail_media(
+        detail.media_candidates,
+        config,
+        job_id=detail.item.dedao_id or detail.item.detail_url,
+    )
     return replace(
         detail,
         transcript_text=result.text,
@@ -458,6 +462,7 @@ def run_retry_failed(
     config_path: str | Path = "config.yaml",
     *,
     limit: int = 20,
+    column_name: str | None = None,
     crawler: DedaoCrawler | None = None,
     summary_service=None,
     notifier: FeishuNotifier | None = None,
@@ -480,6 +485,7 @@ def run_retry_failed(
             STATUS_TRANSCRIPTION_FAILED,
         ),
         limit=limit,
+        column_name=column_name,
     )
     report.discovered_count = len(retry_rows)
 

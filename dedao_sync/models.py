@@ -80,10 +80,11 @@ class TranscriptionConfig:
     asr_concurrency: int = 2
     checkpoint_enabled: bool = True
     model_circuit_breaker_threshold: int = 2
-    max_duration_seconds: int = 14400
+    max_duration_seconds: int = 21600
+    max_segment_audio_bytes: int = 8_000_000
     max_audio_bytes: int = 100_000_000
     request_timeout_seconds: int = 120
-    max_segments: int = 24
+    max_segments: int = 48
     min_free_disk_bytes: int = 1_000_000_000
 
 

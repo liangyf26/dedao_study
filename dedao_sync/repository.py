@@ -335,14 +335,22 @@ class SyncRepository:
                 (run_id, item_id, action, status, safe_message),
             )
 
-    def list_items_by_status(self, statuses: tuple[str, ...], limit: int = 50) -> list[dict[str, Any]]:
+    def list_items_by_status(
+        self,
+        statuses: tuple[str, ...],
+        limit: int = 50,
+        *,
+        column_name: str | None = None,
+    ) -> list[dict[str, Any]]:
         if not statuses:
             return []
         placeholders = ",".join("?" for _ in statuses)
+        column_filter = " AND column_name = ?" if column_name else ""
+        params: tuple[object, ...] = (*statuses, column_name, limit) if column_name else (*statuses, limit)
         with self.connect() as conn:
             rows = conn.execute(
-                f"SELECT * FROM items WHERE status IN ({placeholders}) ORDER BY updated_at ASC LIMIT ?",
-                (*statuses, limit),
+                f"SELECT * FROM items WHERE status IN ({placeholders}){column_filter} ORDER BY updated_at ASC LIMIT ?",
+                params,
             ).fetchall()
             return [dict(row) for row in rows]
 

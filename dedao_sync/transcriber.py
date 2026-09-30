@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -328,14 +328,14 @@ def extract_audio_segments(
             raise TranscriptionError("ffmpeg produced no audio segments")
         if len(segments) > config.max_segments:
             raise TranscriptionError(f"ffmpeg produced {len(segments)} segments; configured limit is {config.max_segments}")
-        total_audio_bytes = 0
         for segment in segments:
             size = segment.stat().st_size
             if size <= 0:
                 raise TranscriptionError("ffmpeg produced an empty audio segment")
-            total_audio_bytes += size
-        if total_audio_bytes > config.max_audio_bytes:
-            raise TranscriptionError("audio segments exceed configured total size limit")
+            if size > config.max_segment_audio_bytes:
+                raise TranscriptionError(
+                    f"audio segment {segment.name} exceeds configured size limit"
+                )
         return segments
     except Exception as exc:
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -346,12 +346,30 @@ def extract_audio_segments(
         raise
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _write_checkpoint(path: Path, payload: dict[str, object]) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
 def transcribe_segments(
     service: TranscriptionService,
     segments: list[Path],
     *,
     concurrency: int = 1,
     checkpoint_dir: Path | None = None,
+    checkpoint_identity: str | None = None,
 ) -> str:
     if not segments:
         raise TranscriptionError("no audio segments to transcribe")
@@ -367,6 +385,15 @@ def transcribe_segments(
         except (OSError, json.JSONDecodeError):
             return None
         if payload.get("segment") != segment.name or not isinstance(payload.get("text"), str):
+            return None
+        if not payload["text"].strip():
+            return None
+        if checkpoint_identity and payload.get("identity") != checkpoint_identity:
+            return None
+        try:
+            if payload.get("audio_sha256") != _file_sha256(segment):
+                return None
+        except OSError:
             return None
         return payload["text"]
 
@@ -386,17 +413,26 @@ def transcribe_segments(
     results: dict[int, str] = {}
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         futures = [executor.submit(transcribe_one, item) for item in items]
-        for future in futures:
+        for future in as_completed(futures):
             index, text = future.result()
             results[index] = text
             if checkpoint_dir is not None:
                 checkpoint_path = checkpoint_dir / f"segment-{index:03d}.json"
-                checkpoint_path.write_text(
-                    json.dumps(
-                        {"segment": segments[index - 1].name, "text": text, "provider": str(getattr(service, "provider", ""))},
-                        ensure_ascii=False,
-                    ),
-                    encoding="utf-8",
+                _write_checkpoint(
+                    checkpoint_path,
+                    {
+                        "identity": checkpoint_identity or "",
+                        "index": index,
+                        "segment": segments[index - 1].name,
+                        "audio_sha256": _file_sha256(segments[index - 1]),
+                        "bytes": segments[index - 1].stat().st_size,
+                        "text": text,
+                        "provider": (
+                            getattr(service, "provider", "")
+                            if isinstance(getattr(service, "provider", ""), str)
+                            else ""
+                        ),
+                    },
                 )
     return "\n\n".join(results[index] for index in range(1, len(segments) + 1))
 
@@ -406,6 +442,7 @@ def transcribe_detail_media(
     config: TranscriptionConfig,
     *,
     service: TranscriptionService | None = None,
+    job_id: str | None = None,
 ) -> TranscriptionResult:
     if not config.enabled:
         raise TranscriptionError("transcription is disabled")
@@ -421,7 +458,8 @@ def transcribe_detail_media(
     segments = extract_audio_segments(candidate, config)
     checkpoint_dir = None
     if config.checkpoint_enabled:
-        checkpoint_key = hashlib.sha256(candidate.url.encode("utf-8")).hexdigest()[:16]
+        checkpoint_key = job_id or hashlib.sha256(candidate.url.encode("utf-8")).hexdigest()[:16]
+        checkpoint_key = re.sub(r"[^A-Za-z0-9_.-]+", "_", checkpoint_key)[:100]
         checkpoint_dir = config.temp_dir / f"checkpoint-{checkpoint_key}"
     succeeded = False
     try:
@@ -430,6 +468,7 @@ def transcribe_detail_media(
             segments,
             concurrency=config.asr_concurrency,
             checkpoint_dir=checkpoint_dir,
+            checkpoint_identity=checkpoint_key if checkpoint_dir is not None else None,
         )
         succeeded = True
     finally:

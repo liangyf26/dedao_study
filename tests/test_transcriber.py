@@ -73,6 +73,24 @@ class TranscriberTests(unittest.TestCase):
             self.assertEqual([path.name for path in segments], ["audio-001.mp3", "audio-002.mp3"])
             cleanup_audio_segments(segments)
 
+    def test_long_duration_uses_per_segment_size_limit_not_total_limit(self):
+        from dedao_sync.transcriber import extract_audio_segments
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = TranscriptionConfig(True, "s3ai", True, root, free_tier_confirmed=True, max_duration_seconds=21600, max_segments=48, max_segment_audio_bytes=8_000_000)
+            candidate = MediaCandidate("https://cdn.example/live.m3u8", "application/x-mpegURL", "m3u8")
+            manifest = "#EXTM3U\n" + "#EXTINF:600,\npart.ts\n" * 33
+            def run_ffmpeg(command, **kwargs):
+                pattern = Path(command[-1])
+                for index in range(1, 34):
+                    pattern.with_name(pattern.name.replace("%03d", f"{index:03d}")).write_bytes(b"a")
+                return mock.Mock()
+            with mock.patch("shutil.which", return_value="/usr/bin/ffmpeg"):
+                with mock.patch("subprocess.run", side_effect=run_ffmpeg):
+                    segments = extract_audio_segments(candidate, config, free_space_bytes=10_000_000_000, manifest_text=manifest)
+            self.assertEqual(len(segments), 33)
+            cleanup_audio_segments(segments)
+
     def test_extract_audio_segments_cleans_work_dir_when_ffmpeg_fails(self):
         from dedao_sync.transcriber import extract_audio_segments
 
@@ -126,16 +144,42 @@ class TranscriberTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             segment = root / "audio-001.mp3"
-            segment.touch()
+            segment.write_bytes(b"audio")
             checkpoint = root / "checkpoint"
             checkpoint.mkdir()
+            import hashlib
+            digest = hashlib.sha256(b"audio").hexdigest()
             (checkpoint / "segment-001.json").write_text(
-                '{"segment":"audio-001.mp3","text":"缓存文本","provider":"s3ai/model"}',
+                '{"segment":"audio-001.mp3","audio_sha256":"' + digest + '","text":"缓存文本","provider":"s3ai/model"}',
                 encoding="utf-8",
             )
             service = mock.Mock()
             self.assertEqual(transcribe_segments(service, [segment], checkpoint_dir=checkpoint), "缓存文本")
             service.transcribe.assert_not_called()
+
+    def test_checkpoint_rejects_hash_mismatch(self):
+        from dedao_sync.transcriber import transcribe_segments
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); segment = root / "audio-001.mp3"; segment.write_bytes(b"new")
+            checkpoint = root / "checkpoint"; checkpoint.mkdir()
+            (checkpoint / "segment-001.json").write_text(
+                '{"segment":"audio-001.mp3","audio_sha256":"wrong","text":"旧文本"}', encoding="utf-8"
+            )
+            service = StubTranscriber(["新文本"])
+            self.assertEqual(transcribe_segments(service, [segment], checkpoint_dir=checkpoint), "新文本")
+
+    def test_checkpoint_identity_is_required_when_provided(self):
+        from dedao_sync.transcriber import transcribe_segments
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); segment = root / "audio-001.mp3"; segment.write_bytes(b"audio")
+            checkpoint = root / "checkpoint"; checkpoint.mkdir()
+            import hashlib
+            digest = hashlib.sha256(b"audio").hexdigest()
+            (checkpoint / "segment-001.json").write_text(
+                '{"identity":"other","segment":"audio-001.mp3","audio_sha256":"' + digest + '","text":"旧文本"}', encoding="utf-8"
+            )
+            service = StubTranscriber(["新文本"])
+            self.assertEqual(transcribe_segments(service, [segment], checkpoint_dir=checkpoint, checkpoint_identity="job-1"), "新文本")
 
     def test_segments_are_transcribed_in_order(self):
         with tempfile.TemporaryDirectory() as tmp:

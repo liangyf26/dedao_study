@@ -121,6 +121,8 @@ def check_config_semantics(config: AppConfig) -> PreflightResult:
         result.add_error("transcription.max_duration_seconds must be positive")
     if transcription.max_audio_bytes <= 0:
         result.add_error("transcription.max_audio_bytes must be positive")
+    if transcription.max_segment_audio_bytes <= 0:
+        result.add_error("transcription.max_segment_audio_bytes must be positive")
     if transcription.max_segments <= 0:
         result.add_error("transcription.max_segments must be positive")
     if transcription.request_timeout_seconds <= 0:
