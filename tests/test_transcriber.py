@@ -225,6 +225,39 @@ class TranscriberTests(unittest.TestCase):
                         with self.assertRaises(TranscriptionError): service.transcribe(audio)
                         self.assertEqual(calls.count(config.models[0]), 2)
 
+    def test_s3ai_http_400_switches_to_next_model(self):
+        import urllib.error
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "part.wav"
+            audio.write_bytes(b"audio")
+            config = TranscriptionConfig(True, "s3ai", True, Path(tmp), free_tier_confirmed=True, model_retries=0)
+            service = S3AITranscriptionService(config)
+            error = urllib.error.HTTPError("https://s3ai.example/audio/transcriptions", 400, "bad model", {}, __import__("io").BytesIO(b"bad model"))
+            class Response:
+                status = 200
+                def __enter__(self): return self
+                def __exit__(self, *args): return False
+                def read(self, limit): return '{"text":"后备结果"}'.encode("utf-8")
+            with mock.patch.dict(os.environ, {config.api_key_env: "test", config.endpoint_env: "https://s3ai.example/v1"}):
+                with mock.patch("dedao_sync.transcriber.LOGGER.warning"):
+                    with mock.patch("urllib.request.urlopen", side_effect=[error, Response()]) as urlopen:
+                        self.assertEqual(service.transcribe(audio), "后备结果")
+            self.assertEqual(urlopen.call_count, 2)
+            self.assertEqual(service.selected_model, config.models[1])
+
+    def test_s3ai_http_401_does_not_switch_model(self):
+        import urllib.error
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "part.wav"
+            audio.write_bytes(b"audio")
+            config = TranscriptionConfig(True, "s3ai", True, Path(tmp), free_tier_confirmed=True, model_retries=0)
+            service = S3AITranscriptionService(config)
+            error = urllib.error.HTTPError("https://s3ai.example/audio/transcriptions", 401, "unauthorized", {}, __import__("io").BytesIO(b"unauthorized"))
+            with mock.patch.dict(os.environ, {config.api_key_env: "test", config.endpoint_env: "https://s3ai.example/v1"}):
+                with mock.patch("urllib.request.urlopen", side_effect=error) as urlopen:
+                    with self.assertRaises(TranscriptionError): service.transcribe(audio)
+            self.assertEqual(urlopen.call_count, 1)
+
     def test_s3ai_adapter_blocks_unconfirmed_costs(self):
         with tempfile.TemporaryDirectory() as tmp:
             audio = Path(tmp) / "part.mp3"

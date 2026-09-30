@@ -53,6 +53,10 @@ class _FatalASRError(TranscriptionError):
     pass
 
 
+class _ModelUnavailableASRError(TranscriptionError):
+    pass
+
+
 class S3AITranscriptionService(TranscriptionService):
     def __init__(self, config: TranscriptionConfig):
         self.config = config
@@ -94,6 +98,10 @@ class S3AITranscriptionService(TranscriptionService):
                     return clean_transcript(text)
                 except _FatalASRError:
                     raise
+                except _ModelUnavailableASRError as exc:
+                    last_error = exc
+                    LOGGER.warning("S3AI ASR model unavailable model=%s error=%s", model, redact(exc))
+                    break
                 except (_TransientASRError, TranscriptionError) as exc:
                     last_error = exc
                     if isinstance(exc, TranscriptionError) and not isinstance(exc, _TransientASRError):
@@ -141,6 +149,8 @@ class S3AITranscriptionService(TranscriptionService):
                 raw = response.read(2_000_000).decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             raw = exc.read(2000).decode("utf-8", errors="replace")
+            if exc.code == 400:
+                raise _ModelUnavailableASRError(f"S3AI ASR HTTP 400: {redact(raw)[:300]}") from exc
             if exc.code == 429 or exc.code >= 500:
                 raise _TransientASRError(f"S3AI ASR HTTP {exc.code}") from exc
             raise _FatalASRError(f"S3AI ASR HTTP {exc.code}: {redact(raw)[:300]}") from exc
@@ -148,6 +158,8 @@ class S3AITranscriptionService(TranscriptionService):
             raise _TransientASRError(f"S3AI ASR transport error: {type(exc).__name__}") from exc
         if status >= 500 or status == 429:
             raise _TransientASRError(f"S3AI ASR HTTP {status}")
+        if status == 400:
+            raise _ModelUnavailableASRError(f"S3AI ASR HTTP 400: {redact(raw)[:300]}")
         if status >= 400:
             raise _FatalASRError(f"S3AI ASR HTTP {status}: {redact(raw)[:300]}")
         try:
